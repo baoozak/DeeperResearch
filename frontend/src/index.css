@@ -270,6 +270,16 @@ h3 { font-size: 1.25rem; }
 .markdown-body tr:nth-child(even) {
   background: rgba(255, 255, 255, 0.02);
 }
+
+/* 隐藏 remark-gfm 自动生成的 Footnotes 大标题和分割线 */
+.markdown-body section[data-footnotes] > h2,
+.markdown-body .footnotes > h2 {
+  display: none !important;
+}
+.markdown-body section[data-footnotes] > hr,
+.markdown-body .footnotes > hr {
+  display: none !important;
+}
 .markdown-body tr:hover {
   background: rgba(255, 255, 255, 0.04);
 }
