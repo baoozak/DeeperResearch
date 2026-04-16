@@ -19,7 +19,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import get_settings
-from .agent.graph import research_graph
+from .agent.graph import research_graph, execute_graph
+from .agent.nodes import triage_node, orchestrator_node, _make_event, _get_llm, PlanOutput
+from .agent.prompts import (
+    ORCHESTRATOR_SYSTEM,
+    ORCHESTRATOR_USER_INITIAL,
+    ORCHESTRATOR_USER_REPLAN,
+)
 
 # ============================================================================
 # 日志配置
@@ -61,6 +67,22 @@ class ResearchRequest(BaseModel):
     """研究请求"""
     topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
+
+
+class PlanRequest(BaseModel):
+    """规划阶段请求"""
+    topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
+    requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
+    feedback: str = Field(default="", max_length=5000, description="用户对上一版方案的反馈意见")
+    previous_plan: list[str] = Field(default_factory=list, description="上一版子任务列表")
+
+
+class ExecuteRequest(BaseModel):
+    """执行阶段请求 (用户审批通过后)"""
+    topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
+    sub_tasks: list[str] = Field(..., description="已审批的子任务列表")
+    requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
+    triage_context: str = Field(default="", max_length=20000, description="哨兵收集的上下文")
 
 
 class ResearchResponse(BaseModel):
@@ -252,6 +274,235 @@ def _phase_message(phase: str, node_name: str) -> str:
         "done": "✅ 研究流程已完成!",
     }
     return messages.get(phase, f"正在执行: {node_name}")
+
+
+def _merge_state(state: dict, update: dict):
+    """手动合并节点输出到状态 (模拟 LangGraph 的 Reducer 行为)"""
+    additive_keys = {"phase_events", "research_results", "sources"}
+    for key, value in update.items():
+        if key in additive_keys and isinstance(value, list):
+            state[key] = state.get(key, []) + value
+        else:
+            state[key] = value
+
+
+# ============================================================================
+# 规划阶段端点 (Human-in-the-Loop: 哨兵 + 规划师 → 等待用户审批)
+# ============================================================================
+
+@app.post("/api/research/plan")
+async def plan_research(request: PlanRequest):
+    """
+    SSE 流式端点 — 规划阶段。
+    执行哨兵预搜 + 规划师拆解子任务，然后暂停等待用户审批。
+    如果携带 feedback，则跳过哨兵直接重新规划。
+    """
+    is_replan = bool(request.feedback and request.previous_plan)
+    logger.info(f"📋 收到{'重规划' if is_replan else '规划'}请求: {request.topic}")
+
+    async def plan_generator():
+        try:
+            state = {
+                "topic": request.topic,
+                "user_requirements": request.requirements,
+                "sub_tasks": [],
+                "research_results": [],
+                "draft": "",
+                "current_phase": "initializing",
+                "phase_events": [],
+                "sources": [],
+                "triage_context": "",
+                "error": "",
+            }
+
+            yield _sse_format("phase", {"phase": "initializing", "message": "正在初始化研究任务..."})
+
+            # ===== 哨兵阶段 (重规划时跳过) =====
+            if not is_replan:
+                yield _sse_format("phase", {"phase": "triage", "message": "🔭 哨兵侦察员正在进行预搜索..."})
+                triage_result = await triage_node(state)
+                _merge_state(state, triage_result)
+                for evt in triage_result.get("phase_events", []):
+                    yield _sse_format("event", evt)
+            else:
+                yield _sse_format("event", _make_event("planning", "跳过哨兵预搜 (复用上一轮情报)，直接重新规划..."))
+
+            # ===== 规划师阶段 =====
+            yield _sse_format("phase", {"phase": "planning", "message": "🧠 规划师正在拆解子任务..."})
+
+            settings = get_settings()
+            llm = _get_llm()
+
+            # 构建用户要求块
+            user_requirements = request.requirements
+            requirements_block = ""
+            if user_requirements:
+                requirements_block = f"\n## 用户的详细要求:\n{user_requirements}\n\n请务必根据以上用户要求来侧重拆解子任务的方向和内容。\n"
+            else:
+                requirements_block = "\n"
+
+            if is_replan:
+                # 使用重规划 Prompt
+                previous_plan_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(request.previous_plan)])
+                user_prompt = ORCHESTRATOR_USER_REPLAN.format(
+                    topic=request.topic,
+                    previous_plan=previous_plan_text,
+                    feedback=request.feedback,
+                    max_sub_tasks=settings.max_sub_tasks,
+                    requirements_block=requirements_block,
+                )
+            else:
+                # 注入哨兵上下文
+                triage_context = state.get("triage_context", "")
+                context_block = ""
+                if triage_context:
+                    context_block = f"\n\n## 最新背景情报 (由哨兵侦察员提供):\n{triage_context}\n\n请务必参考以上最新情报来制定调研计划。"
+
+                user_prompt = ORCHESTRATOR_USER_INITIAL.format(
+                    topic=request.topic,
+                    max_sub_tasks=settings.max_sub_tasks,
+                    requirements_block=requirements_block,
+                ) + context_block
+
+            system_prompt = ORCHESTRATOR_SYSTEM.format(max_sub_tasks=settings.max_sub_tasks)
+
+            # 调用 LLM 获取结构化规划
+            try:
+                from langchain_core.messages import HumanMessage, SystemMessage
+                structured_llm = llm.with_structured_output(PlanOutput)
+                result = await structured_llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ])
+                sub_tasks = result.sub_tasks[:settings.max_sub_tasks]
+                reasoning = result.reasoning
+            except Exception as e:
+                logger.warning(f"结构化输出失败，回退到文本解析: {e}")
+                from langchain_core.messages import HumanMessage, SystemMessage
+                response = await llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ])
+                try:
+                    data = json.loads(response.content)
+                    sub_tasks = data.get("sub_tasks", [])[:settings.max_sub_tasks]
+                    reasoning = data.get("reasoning", "")
+                except json.JSONDecodeError:
+                    sub_tasks = [
+                        line.strip().lstrip("0123456789.-) ")
+                        for line in response.content.split("\n")
+                        if line.strip() and len(line.strip()) > 5
+                    ][:settings.max_sub_tasks]
+                    reasoning = "降级文本解析"
+
+            yield _sse_format("event", _make_event("planning", f"规划完成: 生成 {len(sub_tasks)} 个子任务 ({reasoning})"))
+            yield _sse_format("sub_tasks", {"sub_tasks": sub_tasks})
+
+            # 发送 plan_ready 事件，携带子任务和哨兵上下文供前端保存
+            yield _sse_format("plan_ready", {
+                "sub_tasks": sub_tasks,
+                "triage_context": state.get("triage_context", ""),
+                "reasoning": reasoning,
+            })
+
+            yield _sse_format("phase", {"phase": "plan_review", "message": "调研方案已生成，等待确认..."})
+
+        except Exception as e:
+            logger.error(f"❌ 规划失败: {e}", exc_info=True)
+            yield _sse_format("error", {"message": f"规划过程中发生错误: {str(e)}"})
+
+    return StreamingResponse(
+        plan_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ============================================================================
+# 执行阶段端点 (用户审批通过后: 并发搜索 + 综合撰稿)
+# ============================================================================
+
+@app.post("/api/research/execute")
+async def execute_research(request: ExecuteRequest):
+    """
+    SSE 流式端点 — 执行阶段。
+    接收用户审批通过的子任务列表，执行搜索+撰稿。
+    """
+    logger.info(f"🚀 收到执行请求: {request.topic} ({len(request.sub_tasks)} 个子任务)")
+
+    async def execute_generator():
+        try:
+            initial_state = {
+                "topic": request.topic,
+                "user_requirements": request.requirements,
+                "sub_tasks": request.sub_tasks,
+                "research_results": [],
+                "draft": "",
+                "current_phase": "searching",
+                "phase_events": [],
+                "sources": [],
+                "triage_context": request.triage_context,
+                "error": "",
+            }
+
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}}
+
+            yield _sse_format("phase", {"phase": "searching", "message": "🔍 搜索智能体正在并发执行调研..."})
+
+            last_phase = "searching"
+
+            async for event in execute_graph.astream(initial_state, config=config, stream_mode="updates"):
+                for node_name, update in event.items():
+                    new_phase = update.get("current_phase", last_phase)
+                    if new_phase != last_phase:
+                        yield _sse_format("phase", {
+                            "phase": new_phase,
+                            "node": node_name,
+                            "message": _phase_message(new_phase, node_name),
+                        })
+                        last_phase = new_phase
+
+                    events = update.get("phase_events", [])
+                    for evt in events:
+                        yield _sse_format("event", evt)
+
+                    if "research_results" in update:
+                        for r in update["research_results"]:
+                            yield _sse_format("search_result", {
+                                "sub_task": r.get("sub_task"),
+                                "source_count": r.get("source_count", 0),
+                            })
+
+            # 获取最终状态
+            final_state = await execute_graph.aget_state(config)
+            state_values = final_state.values
+
+            yield _sse_format("result", {
+                "topic": state_values.get("topic", request.topic),
+                "draft": state_values.get("draft", ""),
+                "sources": state_values.get("sources", []),
+            })
+
+            yield _sse_format("phase", {"phase": "done", "message": "研究完成!"})
+
+        except Exception as e:
+            logger.error(f"❌ 执行失败: {e}", exc_info=True)
+            yield _sse_format("error", {"message": f"执行过程中发生错误: {str(e)}"})
+
+    return StreamingResponse(
+        execute_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ============================================================================

@@ -60,6 +60,18 @@ ORCHESTRATOR_USER_INITIAL = """请为以下研究课题制定调研计划:
 {requirements_block}
 请拆解为 {max_sub_tasks} 个具体的子研究任务。"""
 
+ORCHESTRATOR_USER_REPLAN = """请根据用户反馈，调整以下研究课题的调研方案:
+
+课题: {topic}
+
+## 上一版调研方案:
+{previous_plan}
+
+## 用户反馈意见:
+{feedback}
+{requirements_block}
+请重新拆解为 {max_sub_tasks} 个具体的子研究任务，务必充分采纳用户的反馈意见。"""
+
 
 # ============================================================================
 # SEARCH SUMMARIZER (搜索总结)

@@ -122,3 +122,49 @@ def create_research_graph():
 
 # 导出编译好的图实例
 research_graph = create_research_graph()
+
+
+# ============================================================================
+# 执行阶段专用图 (用户审批通过后，仅执行搜索 + 撰写)
+# ============================================================================
+
+def create_execute_graph():
+    """
+    构建执行阶段的 LangGraph 工作流。
+    仅包含搜索和撰写节点，跳过前置的规划环节。
+
+    图结构:
+        START
+          ↓
+        mark_searching → search_worker ×N (并发自纠错搜索智能体)
+          ↓ (全部完成后)
+        mark_synthesizing → synthesizer (综合撰稿人)
+          ↓
+        END
+    """
+    builder = StateGraph(ResearchState)
+
+    # 核心节点
+    builder.add_node("search_worker", search_worker_node)
+    builder.add_node("synthesizer", synthesizer_node)
+
+    # 标记节点
+    builder.add_node("mark_searching", mark_searching)
+    builder.add_node("mark_synthesizing", mark_synthesizing)
+
+    # 边
+    builder.add_edge(START, "mark_searching")
+    builder.add_conditional_edges("mark_searching", initiate_parallel_search, ["search_worker"])
+    builder.add_edge("search_worker", "mark_synthesizing")
+    builder.add_edge("mark_synthesizing", "synthesizer")
+    builder.add_edge("synthesizer", END)
+
+    memory = MemorySaver()
+    graph = builder.compile(checkpointer=memory)
+
+    logger.info("✅ LangGraph 执行工作流编译完成 (搜索+撰写)")
+    return graph
+
+
+# 导出执行图实例
+execute_graph = create_execute_graph()

@@ -3,27 +3,36 @@ import { Brain, AlertCircle } from 'lucide-react';
 import { ResearchForm } from './components/ResearchForm';
 import { GraphVisualizer } from './components/GraphVisualizer';
 import { ResultDisplay } from './components/ResultDisplay';
-import { streamResearch, type StreamEvent } from './api/research';
+import { PlanReview } from './components/PlanReview';
+import { streamPlan, streamExecute, type StreamEvent } from './api/research';
 
 function App() {
   const [topic, setTopic] = useState('');
+  const [requirements, setRequirements] = useState('');
   const [isResearching, setIsResearching] = useState(false);
   const [error, setError] = useState('');
-  
+
   // Graph State
   const [phase, setPhase] = useState('idle');
   const [events, setEvents] = useState<Array<{timestamp: string, phase: string, message: string}>>([]);
   const [subTasks, setSubTasks] = useState<string[]>([]);
-  
+
+  // Plan Review State (Human-in-the-Loop)
+  const [planReady, setPlanReady] = useState(false);
+  const [planReasoning, setPlanReasoning] = useState('');
+  const [triageContext, setTriageContext] = useState('');
+
   // Result State
   const [draft, setDraft] = useState('');
   const [sources, setSources] = useState<Array<{title: string, url: string, snippet: string}>>([]);
 
   const abortStreamRef = useRef<(() => void) | null>(null);
 
+  // ===== Phase 1: 规划阶段 =====
   const handleStartResearch = (newTopic: string, newRequirements: string = '') => {
     // Reset state
     setTopic(newTopic);
+    setRequirements(newRequirements);
     setIsResearching(true);
     setError('');
     setPhase('initializing');
@@ -31,15 +40,19 @@ function App() {
     setSubTasks([]);
     setDraft('');
     setSources([]);
+    setPlanReady(false);
+    setPlanReasoning('');
+    setTriageContext('');
 
-    // Cancel any existing stream
     if (abortStreamRef.current) {
       abortStreamRef.current();
     }
 
-    const abortStream = streamResearch(
+    const abortStream = streamPlan(
       newTopic,
       newRequirements,
+      '', // 首次无 feedback
+      [], // 首次无 previous_plan
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
@@ -52,20 +65,78 @@ function App() {
               }]);
             }
             break;
-            
           case 'event':
             setEvents(prev => [...prev, event.data]);
             break;
-            
           case 'sub_tasks':
             setSubTasks(event.data.sub_tasks);
             break;
-            
+          case 'plan_ready':
+            setSubTasks(event.data.sub_tasks);
+            setTriageContext(event.data.triage_context || '');
+            setPlanReasoning(event.data.reasoning || '');
+            setPlanReady(true);
+            break;
+          case 'error':
+            setError(event.data.message);
+            setIsResearching(false);
+            break;
+        }
+      },
+      () => {
+        setIsResearching(false);
+      },
+      (err: Error) => {
+        console.error("Plan stream error:", err);
+        setError("连接错误: " + err.message);
+        setIsResearching(false);
+      }
+    );
+
+    abortStreamRef.current = abortStream;
+  };
+
+  // ===== Phase 2: 用户同意 → 执行搜索+撰稿 =====
+  const handleApprovePlan = () => {
+    setPlanReady(false);
+    setIsResearching(true);
+    setPhase('searching');
+
+    if (abortStreamRef.current) {
+      abortStreamRef.current();
+    }
+
+    const abortStream = streamExecute(
+      topic,
+      subTasks,
+      requirements,
+      triageContext,
+      (event: StreamEvent) => {
+        switch (event.type) {
+          case 'phase':
+            setPhase(event.data.phase);
+            if (event.data.message) {
+              setEvents(prev => [...prev, {
+                timestamp: new Date().toISOString(),
+                phase: event.data.phase,
+                message: event.data.message
+              }]);
+            }
+            break;
+          case 'event':
+            setEvents(prev => [...prev, event.data]);
+            break;
+          case 'search_result':
+            setEvents(prev => [...prev, {
+              timestamp: new Date().toISOString(),
+              phase: 'searching',
+              message: `✅ ${event.data.sub_task} (${event.data.source_count} 个来源)`
+            }]);
+            break;
           case 'result':
             setDraft(event.data.draft);
             setSources(event.data.sources || []);
             break;
-            
           case 'error':
             setError(event.data.message);
             setIsResearching(false);
@@ -77,7 +148,67 @@ function App() {
         setPhase('done');
       },
       (err: Error) => {
-        console.error("Stream error:", err);
+        console.error("Execute stream error:", err);
+        setError("连接错误: " + err.message);
+        setIsResearching(false);
+      }
+    );
+
+    abortStreamRef.current = abortStream;
+  };
+
+  // ===== 用户不同意 → 携带反馈重规划 =====
+  const handleRejectPlan = (feedback: string) => {
+    setPlanReady(false);
+    setIsResearching(true);
+    setPhase('planning');
+
+    // 保存当前子任务作为 previous_plan
+    const previousPlan = [...subTasks];
+
+    if (abortStreamRef.current) {
+      abortStreamRef.current();
+    }
+
+    const abortStream = streamPlan(
+      topic,
+      requirements,
+      feedback,
+      previousPlan,
+      (event: StreamEvent) => {
+        switch (event.type) {
+          case 'phase':
+            setPhase(event.data.phase);
+            if (event.data.message) {
+              setEvents(prev => [...prev, {
+                timestamp: new Date().toISOString(),
+                phase: event.data.phase,
+                message: event.data.message
+              }]);
+            }
+            break;
+          case 'event':
+            setEvents(prev => [...prev, event.data]);
+            break;
+          case 'sub_tasks':
+            setSubTasks(event.data.sub_tasks);
+            break;
+          case 'plan_ready':
+            setSubTasks(event.data.sub_tasks);
+            setPlanReasoning(event.data.reasoning || '');
+            setPlanReady(true);
+            break;
+          case 'error':
+            setError(event.data.message);
+            setIsResearching(false);
+            break;
+        }
+      },
+      () => {
+        setIsResearching(false);
+      },
+      (err: Error) => {
+        console.error("Replan stream error:", err);
         setError("连接错误: " + err.message);
         setIsResearching(false);
       }
@@ -126,6 +257,31 @@ function App() {
     }
   }, [phase, draft, topic, sources, subTasks, events]);
 
+  // 判断右侧面板应该显示什么
+  const renderRightPanel = () => {
+    // 审批阶段：显示调研方案审批
+    if (planReady && phase === 'plan_review') {
+      return (
+        <PlanReview
+          subTasks={subTasks}
+          reasoning={planReasoning}
+          topic={topic}
+          onApprove={handleApprovePlan}
+          onReject={handleRejectPlan}
+          isLoading={isResearching}
+        />
+      );
+    }
+    // 其他阶段：显示报告
+    return (
+      <ResultDisplay
+        topic={topic}
+        draft={draft}
+        sources={sources}
+      />
+    );
+  };
+
   return (
     <div className="app-container">
       {/* Header */}
@@ -144,7 +300,7 @@ function App() {
         {/* Left Panel: Form & State Visualizer */}
         <div className="left-panel">
           <ResearchForm onSubmit={handleStartResearch} isLoading={isResearching} />
-          
+
           {error && (
             <div style={{ padding: '1rem', background: 'rgba(244, 63, 94, 0.1)', border: '1px solid var(--accent)', borderRadius: 'var(--radius-md)', color: 'var(--accent)', display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
               <AlertCircle size={20} style={{ flexShrink: 0 }} />
@@ -157,13 +313,9 @@ function App() {
           )}
         </div>
 
-        {/* Right Panel: Markdown Report & Sources */}
+        {/* Right Panel: Plan Review or Report */}
         <div className="right-panel">
-          <ResultDisplay 
-            topic={topic}
-            draft={draft}
-            sources={sources}
-          />
+          {renderRightPanel()}
         </div>
       </main>
     </div>
