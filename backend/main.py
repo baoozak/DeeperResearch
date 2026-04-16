@@ -60,6 +60,7 @@ app.add_middleware(
 class ResearchRequest(BaseModel):
     """研究请求"""
     topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
+    requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
 
 
 class ResearchResponse(BaseModel):
@@ -103,6 +104,7 @@ async def run_research(request: ResearchRequest):
         # 初始化状态
         initial_state = {
             "topic": request.topic,
+            "user_requirements": request.requirements,
             "sub_tasks": [],
             "research_results": [],
             "draft": "",
@@ -151,6 +153,7 @@ async def stream_research(request: ResearchRequest):
         try:
             initial_state = {
                 "topic": request.topic,
+                "user_requirements": request.requirements,
                 "sub_tasks": [],
                 "research_results": [],
                 "draft": "",

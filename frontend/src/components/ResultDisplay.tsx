@@ -56,12 +56,6 @@ export function ResultDisplay({ draft, topic, sources }: ResultDisplayProps) {
     if (!draft) return;
     
     let content = draft;
-    if (sources && sources.length > 0) {
-      content += '\n\n---\n\n### 来源汇总\n';
-      sources.forEach((s) => {
-        content += `- [${s.title}](${s.url})\n`;
-      });
-    }
 
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);

@@ -155,9 +155,18 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
     if triage_context:
         context_block = f"\n\n## 最新背景情报 (由哨兵侦察员提供):\n{triage_context}\n\n请务必参考以上最新情报来制定调研计划，避免基于过时信息做出错误判断。"
     
+    # 构建用户要求块
+    user_requirements = state.get("user_requirements", "")
+    requirements_block = ""
+    if user_requirements:
+        requirements_block = f"\n## 用户的详细要求:\n{user_requirements}\n\n请务必根据以上用户要求来侧重拆解子任务的方向和内容。\n"
+    else:
+        requirements_block = "\n"
+
     user_prompt = ORCHESTRATOR_USER_INITIAL.format(
         topic=topic,
         max_sub_tasks=settings.max_sub_tasks,
+        requirements_block=requirements_block,
     ) + context_block
 
     try:
@@ -364,12 +373,21 @@ async def synthesizer_node(state: ResearchState) -> dict[str, Any]:
         ])
         content_blocks += f"\n\n---\n\n### 所有来源汇总\n{source_list}"
 
+    # 构建用户要求块
+    user_requirements = state.get("user_requirements", "")
+    requirements_block = ""
+    if user_requirements:
+        requirements_block = f"\n## 用户的详细要求 (必须严格遵守):\n{user_requirements}\n\n"
+    else:
+        requirements_block = "\n"
+
     try:
         response = await llm.ainvoke([
             SystemMessage(content=SYNTHESIZER_SYSTEM),
             HumanMessage(content=SYNTHESIZER_USER.format(
                 topic=topic,
                 content_blocks=content_blocks,
+                requirements_block=requirements_block,
             )),
         ])
         draft = response.content

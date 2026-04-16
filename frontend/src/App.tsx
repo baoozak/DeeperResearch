@@ -21,7 +21,7 @@ function App() {
 
   const abortStreamRef = useRef<(() => void) | null>(null);
 
-  const handleStartResearch = (newTopic: string) => {
+  const handleStartResearch = (newTopic: string, newRequirements: string = '') => {
     // Reset state
     setTopic(newTopic);
     setIsResearching(true);
@@ -39,6 +39,7 @@ function App() {
 
     const abortStream = streamResearch(
       newTopic,
+      newRequirements,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':

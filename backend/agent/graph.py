@@ -52,7 +52,7 @@ def initiate_parallel_search(state: ResearchState) -> list[Send]:
     logger.info(f"🚀 并行派发 {len(sub_tasks)} 个自纠错搜索任务")
 
     return [
-        Send("search_worker", {"sub_task": task, "topic": topic})
+        Send("search_worker", {"sub_task": task, "topic": topic, "user_requirements": state.get("user_requirements", "")})
         for task in sub_tasks
     ]
 

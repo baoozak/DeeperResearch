@@ -33,6 +33,9 @@ class ResearchState(TypedDict):
     # ===== 哨兵侦察上下文 =====
     triage_context: str                                 # 哨兵节点预搜索收集的时效性上下文摘要
 
+    # ===== 用户自定义要求 =====
+    user_requirements: str                              # 用户提供的详细要求 (影响规划和撰稿)
+
     # ===== 错误处理 =====
     error: str                                          # 错误信息 (空字符串=正常)
 
@@ -42,5 +45,6 @@ class SearchWorkerInput(TypedDict):
     通过 Send() 派发给 Search Worker 的独立输入。
     每个 Search Worker 接收单独的子任务和主题上下文。
     """
-    sub_task: str   # 当前需要搜索的具体子任务
-    topic: str      # 原始研究课题 (提供上下文，帮助搜索聚焦)
+    sub_task: str          # 当前需要搜索的具体子任务
+    topic: str             # 原始研究课题 (提供上下文，帮助搜索聚焦)
+    user_requirements: str # 用户自定义要求 (透传，不影响搜索逻辑)

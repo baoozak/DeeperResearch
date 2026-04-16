@@ -17,6 +17,7 @@ export interface StreamEvent {
  */
 export function streamResearch(
   topic: string,
+  requirements: string,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
@@ -28,7 +29,7 @@ export function streamResearch(
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ topic }),
+    body: JSON.stringify({ topic, requirements }),
     signal: abortController.signal
   }).then(async response => {
     if (!response.ok) {
