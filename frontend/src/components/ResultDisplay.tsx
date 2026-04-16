@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Link as LinkIcon, Download } from 'lucide-react';
+import { FileText, Download } from 'lucide-react';
 import mermaid from 'mermaid';
 import { useEffect, useRef } from 'react';
 
@@ -42,7 +42,7 @@ interface ResultDisplayProps {
   sources: Array<{title: string, url: string, snippet: string}>;
 }
 
-export function ResultDisplay({ draft, topic, sources }: ResultDisplayProps) {
+export function ResultDisplay({ draft, topic }: ResultDisplayProps) {
   if (!draft && !topic) {
     return (
       <div className="glass-panel" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '1rem' }}>
@@ -141,50 +141,6 @@ export function ResultDisplay({ draft, topic, sources }: ResultDisplayProps) {
         )}
       </div>
 
-      {/* Sources Footer */}
-      {sources && sources.length > 0 && (
-        <div style={{ 
-          padding: '1.5rem', 
-          borderTop: '1px solid var(--panel-border)',
-          background: 'rgba(0,0,0,0.2)',
-          borderBottomLeftRadius: 'var(--radius-lg)',
-          borderBottomRightRadius: 'var(--radius-lg)',
-        }}>
-          <h3 style={{ fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-            <LinkIcon size={16} className="text-secondary" />
-            数据来源 ({sources.length})
-          </h3>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-            {sources.map((s, idx) => (
-              <a 
-                key={idx} 
-                href={s.url} 
-                target="_blank" 
-                rel="noreferrer"
-                style={{
-                  fontSize: '0.8rem',
-                  padding: '0.3rem 0.6rem',
-                  background: 'rgba(255,255,255,0.05)',
-                  border: '1px solid var(--panel-border)',
-                  borderRadius: '4px',
-                  color: 'var(--text-main)',
-                  textDecoration: 'none',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.3rem',
-                  maxWidth: '300px',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
-                }}
-                title={s.title}
-              >
-                {new URL(s.url).hostname.replace('www.', '')}
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
