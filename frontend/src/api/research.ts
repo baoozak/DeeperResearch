@@ -8,7 +8,7 @@ export interface ResearchResponse {
 }
 
 export interface StreamEvent {
-  type: 'phase' | 'event' | 'sub_tasks' | 'search_result' | 'result' | 'error' | 'plan_ready';
+  type: 'phase' | 'event' | 'sub_tasks' | 'search_result' | 'result' | 'error' | 'plan_ready' | 'new_source';
   data: any;
 }
 

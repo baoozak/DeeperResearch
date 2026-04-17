@@ -324,6 +324,8 @@ async def plan_research(request: PlanRequest):
                 _merge_state(state, triage_result)
                 for evt in triage_result.get("phase_events", []):
                     yield _sse_format("event", evt)
+                for src in triage_result.get("sources", []):
+                    yield _sse_format("new_source", src)
             else:
                 yield _sse_format("event", _make_event("planning", "跳过哨兵预搜 (复用上一轮情报)，直接重新规划..."))
 
@@ -470,6 +472,10 @@ async def execute_research(request: ExecuteRequest):
                     events = update.get("phase_events", [])
                     for evt in events:
                         yield _sse_format("event", evt)
+
+                    if "sources" in update:
+                        for s in update["sources"]:
+                            yield _sse_format("new_source", s)
 
                     if "research_results" in update:
                         for r in update["research_results"]:

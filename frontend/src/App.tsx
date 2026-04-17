@@ -25,6 +25,7 @@ function App() {
   // Result State
   const [draft, setDraft] = useState('');
   const [sources, setSources] = useState<Array<{title: string, url: string, snippet: string}>>([]);
+  const [liveSources, setLiveSources] = useState<Array<{title: string, url: string, snippet: string}>>([]);
 
   const abortStreamRef = useRef<(() => void) | null>(null);
 
@@ -40,6 +41,7 @@ function App() {
     setSubTasks([]);
     setDraft('');
     setSources([]);
+    setLiveSources([]);
     setPlanReady(false);
     setPlanReasoning('');
     setTriageContext('');
@@ -67,6 +69,12 @@ function App() {
             break;
           case 'event':
             setEvents(prev => [...prev, event.data]);
+            break;
+          case 'new_source':
+            setLiveSources(prev => {
+              if (prev.some(s => s.url === event.data.url)) return prev;
+              return [...prev, event.data];
+            });
             break;
           case 'sub_tasks':
             setSubTasks(event.data.sub_tasks);
@@ -97,10 +105,12 @@ function App() {
   };
 
   // ===== Phase 2: 用户同意 → 执行搜索+撰稿 =====
-  const handleApprovePlan = () => {
+  const handleApprovePlan = (approvedTasks: string[]) => {
     setPlanReady(false);
     setIsResearching(true);
     setPhase('searching');
+    setSubTasks(approvedTasks); // 更新左侧界面展示的任务
+    setLiveSources([]);
 
     if (abortStreamRef.current) {
       abortStreamRef.current();
@@ -108,7 +118,7 @@ function App() {
 
     const abortStream = streamExecute(
       topic,
-      subTasks,
+      approvedTasks, // 这里带入用户改过的任务列表
       requirements,
       triageContext,
       (event: StreamEvent) => {
@@ -130,8 +140,15 @@ function App() {
             setEvents(prev => [...prev, {
               timestamp: new Date().toISOString(),
               phase: 'searching',
-              message: `✅ ${event.data.sub_task} (${event.data.source_count} 个来源)`
+              message: `✅ 任务汇总: ${event.data.sub_task} (提炼了 ${event.data.source_count} 个信息源)`
             }]);
+            break;
+          case 'new_source':
+            setLiveSources(prev => {
+              // 排重
+              if (prev.some(s => s.url === event.data.url)) return prev;
+              return [...prev, event.data];
+            });
             break;
           case 'result':
             setDraft(event.data.draft);
@@ -278,6 +295,9 @@ function App() {
         topic={topic}
         draft={draft}
         sources={sources}
+        events={events}
+        liveSources={liveSources}
+        phase={phase}
       />
     );
   };

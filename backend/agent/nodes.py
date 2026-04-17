@@ -122,11 +122,17 @@ async def triage_node(state: ResearchState) -> dict[str, Any]:
 
     logger.info(f"🔭 Triage 完成: 提炼出 {len(triage_context)} 字的背景摘要 ({len(sources)} 个来源)")
 
+    all_sources = [
+        {"title": s.title, "url": s.url, "snippet": s.snippet}
+        for s in sources if s.url
+    ]
+
     return {
         "triage_context": triage_context,
         "current_phase": "triage",
+        "sources": all_sources,
         "phase_events": [
-            _make_event("triage", f"哨兵侦察完成: 获取到 {len(sources)} 条最新情报"),
+            _make_event("triage", f"哨兵侦察完成: 获取到 {len(all_sources)} 条最新情报"),
         ],
     }
 
