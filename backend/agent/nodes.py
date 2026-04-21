@@ -305,11 +305,17 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                             summary=summary,
                         )),
                     ])
-                    data = json.loads(review_response.content)
+                    content = review_response.content.strip()
+                    if content.startswith("```json"):
+                        content = content.split("```json")[1].split("```")[0].strip()
+                    elif content.startswith("```"):
+                        content = content.split("```")[1].split("```")[0].strip()
+                    data = json.loads(content)
                     verdict = data.get("verdict", "PASS").upper()
                     reason = data.get("reason", "")
                     refined_query = data.get("refined_query", "")
-                except Exception:
+                except Exception as ex:
+                    logger.warning(f"最终解析失败: {ex}, 原文: {review_response.content}")
                     verdict = "PASS"  # 审查失败时默认通过
                     reason = "审查解析失败，默认通过"
                     refined_query = ""
