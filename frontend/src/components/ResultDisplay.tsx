@@ -61,8 +61,23 @@ interface ResultDisplayProps {
   phase?: string;
 }
 
+/**
+ * 清理 LLM 生成的 Markdown 中残留的 HTML 标签。
+ * 主要移除: <a id="xxx"></a>、<a name="xxx"></a> 等锚点标签，
+ * 以及其他可能干扰渲染的内联 HTML。
+ */
+function cleanMarkdown(raw: string): string {
+  return raw
+    // 移除锚点标签: <a id="xxx"></a> 或 <a name="xxx"></a> (自闭合或成对)
+    .replace(/<a\s+(?:id|name)=["'][^"']*["']\s*\/?>\s*(?:<\/a>)?/gi, '')
+    // 移除空的 <a></a> 标签
+    .replace(/<a>\s*<\/a>/gi, '');
+}
+
 export function ResultDisplay({ draft, topic, events, liveSources, phase }: ResultDisplayProps) {
   const [showThinking, setShowThinking] = useState(true);
+  // 清理后的报告内容
+  const cleanedDraft = draft ? cleanMarkdown(draft) : '';
 
   // 当报告生成完毕时，自动折叠思考过程；如果重新开始研究，则自动展开
   useEffect(() => {
@@ -73,7 +88,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
     }
   }, [draft, phase]);
 
-  if (!draft && !topic) {
+  if (!cleanedDraft && !topic) {
     return (
       <div className="glass-panel" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '1rem' }}>
         <FileText size={48} opacity={0.2} />
@@ -83,9 +98,9 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
   }
 
   const handleDownload = () => {
-    if (!draft) return;
+    if (!cleanedDraft) return;
     
-    let content = draft;
+    let content = cleanedDraft;
 
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -114,7 +129,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
       }}>
         <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'white' }}>{topic || '研究报告草稿'}</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          {draft && (
+          {cleanedDraft && (
             <button 
               onClick={handleDownload}
               style={{
@@ -145,13 +160,13 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
       <div style={{ flex: 1, overflowY: 'auto', padding: '2rem' }} className="markdown-body">
         
         {/* 顶部思考区域（无论是否有 draft 都会显示，生成后默认折叠） */}
-        {(events?.length ? true : liveSources?.length ? true : !draft) && (
+        {(events?.length ? true : liveSources?.length ? true : !cleanedDraft) && (
           <div className="thinking-container" style={{ margin: '0 auto 2rem auto', maxWidth: '800px', display: 'flex', flexDirection: 'column', gap: '1.5rem', background: 'rgba(0,0,0,0.2)', padding: '1.5rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--panel-border)' }}>
             <div 
               style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '1.05rem', color: 'var(--text-main)', cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}
               onClick={() => setShowThinking(!showThinking)}
             >
-              {!draft && <div className="animate-pulse-slow" style={{ width: '10px', height: '10px', background: 'var(--secondary)', borderRadius: '50%', boxShadow: '0 0 8px var(--secondary)' }}></div>}
+              {!cleanedDraft && <div className="animate-pulse-slow" style={{ width: '10px', height: '10px', background: 'var(--secondary)', borderRadius: '50%', boxShadow: '0 0 8px var(--secondary)' }}></div>}
               <span style={{ fontWeight: 600 }}>显示思考与检索过程</span>
               {showThinking ? <ChevronUp size={18} color="var(--text-muted)" /> : <ChevronDown size={18} color="var(--text-muted)" />}
             </div>
@@ -230,7 +245,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
           </div>
         )}
 
-        {draft && (
+        {cleanedDraft && (
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -248,7 +263,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
               }
             }}
           >
-            {draft}
+            {cleanedDraft}
           </ReactMarkdown>
         )}
       </div>
