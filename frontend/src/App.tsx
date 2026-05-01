@@ -9,6 +9,7 @@ import { streamPlan, streamExecute, type StreamEvent } from './api/research';
 function App() {
   const [topic, setTopic] = useState('');
   const [requirements, setRequirements] = useState('');
+  const [searchEngine, setSearchEngine] = useState('domestic');
   const [isResearching, setIsResearching] = useState(false);
   const [error, setError] = useState('');
 
@@ -30,10 +31,11 @@ function App() {
   const abortStreamRef = useRef<(() => void) | null>(null);
 
   // ===== Phase 1: 规划阶段 =====
-  const handleStartResearch = (newTopic: string, newRequirements: string = '') => {
+  const handleStartResearch = (newTopic: string, newRequirements: string = '', newSearchEngine: string = 'domestic') => {
     // Reset state
     setTopic(newTopic);
     setRequirements(newRequirements);
+    setSearchEngine(newSearchEngine);
     setIsResearching(true);
     setError('');
     setPhase('initializing');
@@ -55,6 +57,7 @@ function App() {
       newRequirements,
       '', // 首次无 feedback
       [], // 首次无 previous_plan
+      newSearchEngine,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
@@ -121,6 +124,7 @@ function App() {
       approvedTasks, // 这里带入用户改过的任务列表
       requirements,
       triageContext,
+      searchEngine,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
@@ -192,6 +196,7 @@ function App() {
       requirements,
       feedback,
       previousPlan,
+      searchEngine,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':

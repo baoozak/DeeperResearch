@@ -67,6 +67,7 @@ class ResearchRequest(BaseModel):
     """研究请求"""
     topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
+    search_engine: str = Field(default="domestic", description="搜索引擎: domestic(国内DashScope) / international(DuckDuckGo)")
 
 
 class PlanRequest(BaseModel):
@@ -75,6 +76,7 @@ class PlanRequest(BaseModel):
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
     feedback: str = Field(default="", max_length=5000, description="用户对上一版方案的反馈意见")
     previous_plan: list[str] = Field(default_factory=list, description="上一版子任务列表")
+    search_engine: str = Field(default="domestic", description="搜索引擎: domestic / international")
 
 
 class ExecuteRequest(BaseModel):
@@ -83,6 +85,7 @@ class ExecuteRequest(BaseModel):
     sub_tasks: list[str] = Field(..., description="已审批的子任务列表")
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
     triage_context: str = Field(default="", max_length=20000, description="哨兵收集的上下文")
+    search_engine: str = Field(default="domestic", description="搜索引擎: domestic / international")
 
 
 class ResearchResponse(BaseModel):
@@ -135,6 +138,7 @@ async def run_research(request: ResearchRequest):
             "current_phase": "initializing",
             "phase_events": [],
             "sources": [],
+            "search_engine": request.search_engine,
             "error": "",
         }
 
@@ -182,6 +186,7 @@ async def stream_research(request: ResearchRequest):
                 "current_phase": "initializing",
                 "phase_events": [],
                 "sources": [],
+                "search_engine": request.search_engine,
                 "triage_context": "",
                 "error": "",
             }
@@ -311,6 +316,7 @@ async def plan_research(request: PlanRequest):
                 "current_phase": "initializing",
                 "phase_events": [],
                 "sources": [],
+                "search_engine": request.search_engine,
                 "triage_context": "",
                 "error": "",
             }
@@ -447,6 +453,7 @@ async def execute_research(request: ExecuteRequest):
                 "current_phase": "searching",
                 "phase_events": [],
                 "sources": [],
+                "search_engine": request.search_engine,
                 "triage_context": request.triage_context,
                 "error": "",
             }

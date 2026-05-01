@@ -5,6 +5,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 ## ✨ 核心特性
 
 - **🧠 模型即搜索 (Search-In-LLM)**：深度集成阿里云 DashScope 内置的 `enable_search` 搜索引擎，一次调用完成检索与提炼的无缝协同。
+- **🌐 双搜索引擎切换**：支持**国内搜索（DashScope）**与**国际搜索（DuckDuckGo）**互斥单选切换。国际搜索模式下自动将中文关键词翻译为英文、设置全球无区域偏好，确保命中国际来源。
 - **⚙️ 多智能体协同 (LangGraph)**：
   - **哨兵侦察 (Triage)**：根据用户主命题发起前置预搜，提炼时效背景（用于打破规划时空幻觉）。
   - **全局规划师 (Orchestrator)**：洞悉破冰资料，自动将命题切解为 3-5 个独立且完备的专业子任务。
@@ -27,7 +28,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **引擎之心**：`LangGraph`, `LangChain`, `OpenAI SDK`
 - **后端服务**：`Python 3.9+`, `FastAPI`, `Pydantic`, `Uvicorn`
 - **前端可视化**：`React 18`, `TypeScript`, `Vite`, `React-Markdown`, `Mermaid.js`
-- **搜索服务**：阿里云 `DashScope` (通义千问大语言模型底座扩展)
+- **搜索服务**：阿里云 `DashScope` (国内搜索) / `DuckDuckGo` (国际搜索，需 TUN/代理)
 
 ## 📂 核心目录结构
 
@@ -39,7 +40,7 @@ DeeperResearch/
 │   │   ├── nodes.py          # 具体角色逻辑节点库 (Triage, Orchestrator 等)
 │   │   ├── prompts.py        # Master 级系统提示词库 (含重规划模板)
 │   │   ├── state.py          # 跨节点全局记忆与状态维持机制
-│   │   └── tools.py          # URL提取与聚合搜索工具
+│   │   └── tools.py          # 双引擎统一搜索入口 (DashScope/DuckDuckGo) + 关键词翻译
 │   ├── main.py               # SSE 服务端 (/plan + /execute 双阶段端点)
 │   └── config.py             # 全局环境依赖配置项
 ├── frontend/                 # 🔭 可视化交互前端
@@ -101,8 +102,10 @@ npm run dev
 - [ ] **异步任务队列持久化与连接恢复 (Job ID 机制)**
   - *当前局限*：现有的流式直连（Telephony 模式）非常脆弱，在复杂的研究周期（可能达数分钟）执行生成时若浏览器手动刷新导致连接重置切断，不仅中断任务并且无法断点续传。
   - *系统改造*：引入基于 `Redis / SQLite` 及异步任务队列 (`Celery` / `BackgroundTasks`)。前端发起任务后将拿到一个 `job_id`，利用状态轮询或重定位流式链接订阅图计算过程。即使浏览器刷新，只要持有该 `job_id` 便能瞬间重建之前运算积累的所有进度并在图上接续动画。
-- [ ] **多平台与定制搜素环境引擎解绑 (Adapter Pattern 解耦)**
-  - 将硬绑定的阿里云端内置搜索模式抽离解耦为搜索调用抽象层，支持自由配置并按需调度 Tavily / Bing  以便轻松跨任意通用型大模型（例如：DeepSeek, O1, Kimi 等）运作。
+- [x] **多平台搜索引擎切换 (DashScope / DuckDuckGo)**
+  - 已实现双引擎统一入口 `web_search()`，前端 Radio 互斥单选，国际搜索自动翻译关键词为英文。
+- [ ] **更多搜索引擎适配 (Adapter Pattern 解耦)**
+  - 在现有双引擎基础上进一步抽象，支持自由配置 Tavily / Bing / Google 等，以便跨任意通用型大模型运作。
 - [ ] **完整的数据库账号体系持久化**
   - 使用数据库完全托管历史草稿与知识溯源链接的持久保存。
 

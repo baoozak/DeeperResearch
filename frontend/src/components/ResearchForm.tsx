@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Search, Settings2 } from 'lucide-react';
+import { Search, Settings2, Globe, Shield } from 'lucide-react';
 
 interface ResearchFormProps {
-  onSubmit: (topic: string, requirements: string) => void;
+  onSubmit: (topic: string, requirements: string, searchEngine: string) => void;
   isLoading: boolean;
 }
 
@@ -10,6 +10,7 @@ export function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
   const [topic, setTopic] = useState('');
   const [requirements, setRequirements] = useState('');
   const [showRequirements, setShowRequirements] = useState(false);
+  const [searchEngine, setSearchEngine] = useState<'domestic' | 'international'>('domestic');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const reqTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -30,7 +31,7 @@ export function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (topic.trim() && !isLoading) {
-      onSubmit(topic.trim(), requirements.trim());
+      onSubmit(topic.trim(), requirements.trim(), searchEngine);
     }
   };
 
@@ -57,6 +58,81 @@ export function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
             disabled={isLoading}
             required
           />
+        </div>
+
+        {/* 搜索引擎选择 */}
+        <div style={{
+          display: 'flex',
+          gap: '0.5rem',
+          flexWrap: 'wrap',
+        }}>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.5rem 0.85rem',
+              borderRadius: '8px',
+              border: `1px solid ${searchEngine === 'domestic' ? 'var(--primary)' : 'var(--panel-border)'}`,
+              background: searchEngine === 'domestic' ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              fontSize: '0.85rem',
+              color: searchEngine === 'domestic' ? 'var(--text-main)' : 'var(--text-muted)',
+              transition: 'all 0.2s ease',
+              userSelect: 'none',
+              flex: '1 1 0',
+              minWidth: '130px',
+            }}
+          >
+            <input
+              type="radio"
+              name="searchEngine"
+              value="domestic"
+              checked={searchEngine === 'domestic'}
+              onChange={() => setSearchEngine('domestic')}
+              disabled={isLoading}
+              style={{ display: 'none' }}
+            />
+            <Shield size={14} style={{ color: searchEngine === 'domestic' ? 'var(--primary)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <span>国内搜索</span>
+          </label>
+
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              padding: '0.5rem 0.85rem',
+              borderRadius: '8px',
+              border: `1px solid ${searchEngine === 'international' ? 'var(--secondary)' : 'var(--panel-border)'}`,
+              background: searchEngine === 'international' ? 'rgba(6, 182, 212, 0.15)' : 'transparent',
+              cursor: isLoading ? 'not-allowed' : 'pointer',
+              fontSize: '0.85rem',
+              color: searchEngine === 'international' ? 'var(--text-main)' : 'var(--text-muted)',
+              transition: 'all 0.2s ease',
+              userSelect: 'none',
+              flex: '1 1 0',
+              minWidth: '130px',
+            }}
+          >
+            <input
+              type="radio"
+              name="searchEngine"
+              value="international"
+              checked={searchEngine === 'international'}
+              onChange={() => setSearchEngine('international')}
+              disabled={isLoading}
+              style={{ display: 'none' }}
+            />
+            <Globe size={14} style={{ color: searchEngine === 'international' ? 'var(--secondary)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <span style={{ whiteSpace: 'nowrap' }}>国际搜索</span>
+            <span style={{
+              fontSize: '0.65rem',
+              color: 'var(--text-muted)',
+              opacity: 0.7,
+              whiteSpace: 'nowrap',
+            }}>需TUN</span>
+          </label>
         </div>
 
         {/* 详细要求折叠面板 */}

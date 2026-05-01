@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from .state import ResearchState, SearchWorkerInput
-from .tools import web_search_llm
+from .tools import web_search
 from .prompts import (
     TRIAGE_SYSTEM,
     TRIAGE_USER,
@@ -103,11 +103,14 @@ async def triage_node(state: ResearchState) -> dict[str, Any]:
 
     logger.info(f"🔭 Triage 哨兵启动: 预搜索 '{topic}'")
 
-    # 一次 API 调用 = 搜索 + 理解 + 摘要 (阿里云云端搜索，国内零网络问题)
-    triage_context, sources = await web_search_llm(
+    # 一次 API 调用 = 搜索 + 理解 + 摘要 (根据用户选择的搜索引擎分发)
+    search_engine = state.get("search_engine", "domestic")
+    triage_context, sources = await web_search(
         query=TRIAGE_USER.format(topic=topic),
         system_prompt=TRIAGE_SYSTEM,
+        search_engine=search_engine,
         search_strategy="max",
+        search_keywords=topic,  # DDG 用纯关键词而非完整 prompt
     )
 
     if not triage_context:
@@ -247,10 +250,12 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
             sub_task=current_query,
             topic=topic,
         )
-        summary, sources_extracted = await web_search_llm(
+        summary, sources_extracted = await web_search(
             query=user_prompt,
             system_prompt=SEARCH_SUMMARIZER_SYSTEM,
+            search_engine=state.get("search_engine", "domestic"),
             search_strategy="max",
+            search_keywords=current_query,  # DDG 用纯关键词而非完整 prompt
         )
 
         if not summary:

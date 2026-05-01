@@ -36,6 +36,9 @@ class ResearchState(TypedDict):
     # ===== 用户自定义要求 =====
     user_requirements: str                              # 用户提供的详细要求 (影响规划和撰稿)
 
+    # ===== 搜索引擎选择 =====
+    search_engine: str                                  # 搜索引擎: domestic(DashScope) / international(DuckDuckGo)
+
     # ===== 错误处理 =====
     error: str                                          # 错误信息 (空字符串=正常)
 
@@ -48,3 +51,4 @@ class SearchWorkerInput(TypedDict):
     sub_task: str          # 当前需要搜索的具体子任务
     topic: str             # 原始研究课题 (提供上下文，帮助搜索聚焦)
     user_requirements: str # 用户自定义要求 (透传，不影响搜索逻辑)
+    search_engine: str     # 搜索引擎选择 (透传)

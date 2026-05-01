@@ -87,13 +87,14 @@ export function streamPlan(
   requirements: string,
   feedback: string,
   previousPlan: string[],
+  searchEngine: string,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ) {
   return _streamSSE(
     'http://localhost:8000/api/research/plan',
-    { topic, requirements, feedback, previous_plan: previousPlan },
+    { topic, requirements, feedback, previous_plan: previousPlan, search_engine: searchEngine },
     onEvent, onComplete, onError
   );
 }
@@ -106,13 +107,14 @@ export function streamExecute(
   subTasks: string[],
   requirements: string,
   triageContext: string,
+  searchEngine: string,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ) {
   return _streamSSE(
     'http://localhost:8000/api/research/execute',
-    { topic, sub_tasks: subTasks, requirements, triage_context: triageContext },
+    { topic, sub_tasks: subTasks, requirements, triage_context: triageContext, search_engine: searchEngine },
     onEvent, onComplete, onError
   );
 }
