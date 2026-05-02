@@ -8,3 +8,5 @@ langchain_openai
 openai
 python-dotenv
 ddgs
+markitdown[all]
+python-multipart

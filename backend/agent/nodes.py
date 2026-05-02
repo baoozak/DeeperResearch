@@ -172,11 +172,17 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
     else:
         requirements_block = "\n"
 
+    # 构建用户上传材料块
+    uploaded_context = state.get("uploaded_context", "")
+    uploaded_block = ""
+    if uploaded_context:
+        uploaded_block = f"\n## 用户上传的参考材料:\n{uploaded_context}\n\n请参考以上用户提供的材料，在拆解子任务时侧重分析材料中的内容和主题。\n"
+
     user_prompt = ORCHESTRATOR_USER_INITIAL.format(
         topic=topic,
         max_sub_tasks=settings.max_sub_tasks,
         requirements_block=requirements_block,
-    ) + context_block
+    ) + context_block + uploaded_block
 
     try:
         structured_llm = llm.with_structured_output(PlanOutput)
@@ -398,6 +404,12 @@ async def synthesizer_node(state: ResearchState) -> dict[str, Any]:
     else:
         requirements_block = "\n"
 
+    # 构建用户上传材料块
+    uploaded_context = state.get("uploaded_context", "")
+    uploaded_block = ""
+    if uploaded_context:
+        uploaded_block = f"\n## 用户上传的参考材料:\n{uploaded_context}\n\n请在报告中充分参考和引用以上用户提供的材料内容。\n"
+
     try:
         response = await llm.ainvoke([
             SystemMessage(content=SYNTHESIZER_SYSTEM),
@@ -405,7 +417,7 @@ async def synthesizer_node(state: ResearchState) -> dict[str, Any]:
                 topic=topic,
                 content_blocks=content_blocks,
                 requirements_block=requirements_block,
-            )),
+            ) + uploaded_block),
         ])
         draft = response.content
     except Exception as e:

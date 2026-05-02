@@ -10,6 +10,7 @@ function App() {
   const [topic, setTopic] = useState('');
   const [requirements, setRequirements] = useState('');
   const [searchEngine, setSearchEngine] = useState('domestic');
+  const [uploadedContext, setUploadedContext] = useState('');
   const [isResearching, setIsResearching] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,11 +32,12 @@ function App() {
   const abortStreamRef = useRef<(() => void) | null>(null);
 
   // ===== Phase 1: 规划阶段 =====
-  const handleStartResearch = (newTopic: string, newRequirements: string = '', newSearchEngine: string = 'domestic') => {
+  const handleStartResearch = (newTopic: string, newRequirements: string = '', newSearchEngine: string = 'domestic', newUploadedContext: string = '') => {
     // Reset state
     setTopic(newTopic);
     setRequirements(newRequirements);
     setSearchEngine(newSearchEngine);
+    setUploadedContext(newUploadedContext);
     setIsResearching(true);
     setError('');
     setPhase('initializing');
@@ -58,6 +60,7 @@ function App() {
       '', // 首次无 feedback
       [], // 首次无 previous_plan
       newSearchEngine,
+      newUploadedContext,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
@@ -125,6 +128,7 @@ function App() {
       requirements,
       triageContext,
       searchEngine,
+      uploadedContext,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
@@ -197,6 +201,7 @@ function App() {
       feedback,
       previousPlan,
       searchEngine,
+      uploadedContext,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':

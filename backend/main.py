@@ -13,7 +13,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -68,6 +68,7 @@ class ResearchRequest(BaseModel):
     topic: str = Field(..., min_length=2, max_length=500, description="研究课题")
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
     search_engine: str = Field(default="domestic", description="搜索引擎: domestic(国内DashScope) / international(DuckDuckGo)")
+    uploaded_context: str = Field(default="", max_length=50000, description="用户上传文件转换后的 Markdown 内容")
 
 
 class PlanRequest(BaseModel):
@@ -77,6 +78,7 @@ class PlanRequest(BaseModel):
     feedback: str = Field(default="", max_length=5000, description="用户对上一版方案的反馈意见")
     previous_plan: list[str] = Field(default_factory=list, description="上一版子任务列表")
     search_engine: str = Field(default="domestic", description="搜索引擎: domestic / international")
+    uploaded_context: str = Field(default="", max_length=50000, description="用户上传文件转换后的 Markdown 内容")
 
 
 class ExecuteRequest(BaseModel):
@@ -86,6 +88,7 @@ class ExecuteRequest(BaseModel):
     requirements: str = Field(default="", max_length=10000, description="用户的详细要求 (可选)")
     triage_context: str = Field(default="", max_length=20000, description="哨兵收集的上下文")
     search_engine: str = Field(default="domestic", description="搜索引擎: domestic / international")
+    uploaded_context: str = Field(default="", max_length=50000, description="用户上传文件转换后的 Markdown 内容")
 
 
 class ResearchResponse(BaseModel):
@@ -107,11 +110,83 @@ async def health_check():
     """
     return {
         "status": "ok",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "model": settings.model_name,
         "base_url": settings.openai_base_url,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ============================================================================
+# 文件上传端点 (MarkItDown 转换)
+# ============================================================================
+
+# 支持的文件扩展名
+_ALLOWED_EXTENSIONS = {
+    '.md', '.txt', '.csv', '.json', '.xml', '.html', '.htm',
+    '.pdf', '.docx', '.doc', '.pptx', '.ppt', '.xlsx', '.xls',
+    '.epub', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.wav', '.mp3',
+}
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+@app.post("/api/upload")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    文件上传端点。使用 MarkItDown 将各种格式文件转换为 Markdown 文本。
+    支持: PDF, Word, PowerPoint, Excel, Markdown, TXT, CSV, JSON, XML, HTML 等。
+    """
+    import os
+    from markitdown import MarkItDown
+
+    # 校验文件扩展名
+    ext = os.path.splitext(file.filename or '')[1].lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的文件格式: {ext}。支持的格式: {', '.join(sorted(_ALLOWED_EXTENSIONS))}"
+        )
+
+    # 读取文件内容并校验大小
+    content_bytes = await file.read()
+    if len(content_bytes) > _MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail=f"文件过大，最大支持 10MB")
+
+    try:
+        # .md / .txt 直接读取
+        if ext in {'.md', '.txt'}:
+            markdown_content = content_bytes.decode('utf-8', errors='replace')
+        else:
+            # 其他格式通过 MarkItDown 转换
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(content_bytes)
+                tmp_path = tmp.name
+            try:
+                md = MarkItDown()
+                result = md.convert(tmp_path)
+                markdown_content = result.text_content
+            finally:
+                os.unlink(tmp_path)
+
+        # 截断过长内容
+        max_chars = 15000
+        truncated = len(markdown_content) > max_chars
+        if truncated:
+            markdown_content = markdown_content[:max_chars] + "\n\n... (内容已截断，原文过长)"
+
+        logger.info(f"📄 文件上传成功: {file.filename} ({len(content_bytes)} bytes → {len(markdown_content)} chars Markdown)")
+
+        return {
+            "filename": file.filename,
+            "markdown": markdown_content,
+            "char_count": len(markdown_content),
+            "truncated": truncated,
+        }
+
+    except Exception as e:
+        logger.error(f"❌ 文件转换失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"文件转换失败: {str(e)}")
 
 
 @app.post("/api/research", response_model=ResearchResponse)
@@ -139,6 +214,7 @@ async def run_research(request: ResearchRequest):
             "phase_events": [],
             "sources": [],
             "search_engine": request.search_engine,
+            "uploaded_context": request.uploaded_context,
             "error": "",
         }
 
@@ -187,6 +263,7 @@ async def stream_research(request: ResearchRequest):
                 "phase_events": [],
                 "sources": [],
                 "search_engine": request.search_engine,
+                "uploaded_context": request.uploaded_context,
                 "triage_context": "",
                 "error": "",
             }
@@ -317,6 +394,7 @@ async def plan_research(request: PlanRequest):
                 "phase_events": [],
                 "sources": [],
                 "search_engine": request.search_engine,
+                "uploaded_context": request.uploaded_context,
                 "triage_context": "",
                 "error": "",
             }
@@ -454,6 +532,7 @@ async def execute_research(request: ExecuteRequest):
                 "phase_events": [],
                 "sources": [],
                 "search_engine": request.search_engine,
+                "uploaded_context": request.uploaded_context,
                 "triage_context": request.triage_context,
                 "error": "",
             }

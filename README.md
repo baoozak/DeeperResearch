@@ -14,6 +14,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **👤 Human-in-the-Loop 审批环**：规划师拆解完子任务后，系统会先将调研方案呈现给用户审批。用户可确认开始执行，也可填写反馈意见触发规划师重新拆解，循环往复直到满意才正式开始调研。
 - **💫 动态交互感知 (UI)**：带有动态节点状态机展示，通过 HTTP Server-Sent Events (SSE) 长连接，实现整个 LangGraph 思维链路和状态转移的可视化实时呈现。
 - **🎯 用户自定义要求**：支持在输入研究主题时额外填写详细要求（如“重点分析技术架构”“用学术论文风格”等），要求会同时注入规划师和撰稿人，影响子任务拆解方向和报告写作风格。
+- **📄 多格式文件上传**：集成 [MarkItDown](https://github.com/microsoft/markitdown)，支持上传 PDF / Word / Excel / PPT / Markdown 等多种格式文件作为参考材料，自动转换为 Markdown 注入研究流程，辅助规划师拆解子任务和撰稿人生成报告。
 - **💾 轻量级持久化**：报告生成完成后自动缓存至浏览器 localStorage，防止误触刷新丢失。同时支持一键导出为 Markdown 文件。
 
 ## 📸 界面展示
@@ -29,6 +30,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **后端服务**：`Python 3.9+`, `FastAPI`, `Pydantic`, `Uvicorn`
 - **前端可视化**：`React 18`, `TypeScript`, `Vite`, `React-Markdown`, `Mermaid.js`
 - **搜索服务**：阿里云 `DashScope` (国内搜索) / `DuckDuckGo` (国际搜索，需 TUN/代理)
+- **文件解析**：微软 `MarkItDown` (多格式文件转 Markdown)
 
 ## 📂 核心目录结构
 
@@ -41,7 +43,7 @@ DeeperResearch/
 │   │   ├── prompts.py        # Master 级系统提示词库 (含重规划模板)
 │   │   ├── state.py          # 跨节点全局记忆与状态维持机制
 │   │   └── tools.py          # 双引擎统一搜索入口 (DashScope/DuckDuckGo) + 关键词翻译
-│   ├── main.py               # SSE 服务端 (/plan + /execute 双阶段端点)
+│   ├── main.py               # SSE 服务端 (/plan + /execute + /upload 多端点)
 │   └── config.py             # 全局环境依赖配置项
 ├── frontend/                 # 🔭 可视化交互前端
 │   ├── src/
@@ -65,7 +67,7 @@ DeeperResearch/
 ```bash
 # 建议在独立虚拟环境中运行
 python -m venv .venv
-source .venv/Scripts/activate  # Windows 终端激活指令
+.venv/Scripts/activate  # Windows 终端激活指令
 
 # 安装后端必要库
 pip install -r backend/requirements.txt

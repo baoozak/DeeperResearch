@@ -39,6 +39,9 @@ class ResearchState(TypedDict):
     # ===== 搜索引擎选择 =====
     search_engine: str                                  # 搜索引擎: domestic(DashScope) / international(DuckDuckGo)
 
+    # ===== 用户上传文件内容 =====
+    uploaded_context: str                               # 用户上传文件转换后的 Markdown 内容
+
     # ===== 错误处理 =====
     error: str                                          # 错误信息 (空字符串=正常)
 
