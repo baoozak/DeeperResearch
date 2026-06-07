@@ -49,15 +49,22 @@ logger = logging.getLogger(__name__)
 def _get_llm() -> ChatOpenAI:
     """
     创建 LLM 实例。使用工厂函数而非全局变量，
-    确保在配置加载完成后才初始化。
+    并优先应用前端传来的临时配置进行覆盖。
     """
+    from ..config import temp_api_key, temp_base_url, temp_model, get_settings
     settings = get_settings()
+    
+    api_key = temp_api_key.get() or settings.openai_api_key
+    base_url = temp_base_url.get() or settings.openai_base_url
+    model_name = temp_model.get() or settings.model_name
+
     return ChatOpenAI(
-        model=settings.model_name,
+        model=model_name,
         temperature=settings.temperature,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=api_key,
+        base_url=base_url,
     )
+
 
 
 def _make_event(phase: str, message: str) -> dict:
@@ -150,13 +157,15 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
     将宽泛课题拆解为 3-5 个子研究任务。
     首次规划时注入哨兵收集的时效性上下文，避免幻觉。
     """
+    from ..config import temp_max_sub_tasks
     settings = get_settings()
     llm = _get_llm()
     topic = state.get("topic", "")
 
     logger.info(f"📋 Orchestrator 开始规划: {topic}")
 
-    system_prompt = ORCHESTRATOR_SYSTEM.format(max_sub_tasks=settings.max_sub_tasks)
+    max_sub = temp_max_sub_tasks.get() or settings.max_sub_tasks
+    system_prompt = ORCHESTRATOR_SYSTEM.format(max_sub_tasks=max_sub)
 
     # 注入哨兵收集的时效性上下文
     triage_context = state.get("triage_context", "")
@@ -176,11 +185,11 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
     uploaded_context = state.get("uploaded_context", "")
     uploaded_block = ""
     if uploaded_context:
-        uploaded_block = f"\n## 用户上传的参考材料:\n{uploaded_context}\n\n请参考以上用户提供的材料，在拆解子任务时侧重分析材料中的内容和主题。\n"
+        uploaded_block = f"\n## 用户上传的参考材料:\n{uploaded_context}\n\n请参考以上用户提供的材料，在拆解子任务时侧重分析材料中的内容 and 主题。\n"
 
     user_prompt = ORCHESTRATOR_USER_INITIAL.format(
         topic=topic,
-        max_sub_tasks=settings.max_sub_tasks,
+        max_sub_tasks=max_sub,
         requirements_block=requirements_block,
     ) + context_block + uploaded_block
 
@@ -190,7 +199,7 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
         ])
-        sub_tasks = result.sub_tasks[:settings.max_sub_tasks]
+        sub_tasks = result.sub_tasks[:max_sub]
         reasoning = result.reasoning
     except Exception as e:
         logger.warning(f"结构化输出失败，回退到文本解析: {e}")
@@ -200,14 +209,14 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
         ])
         try:
             data = json.loads(response.content)
-            sub_tasks = data.get("sub_tasks", [])[:settings.max_sub_tasks]
+            sub_tasks = data.get("sub_tasks", [])[:max_sub]
             reasoning = data.get("reasoning", "")
         except json.JSONDecodeError:
             sub_tasks = [
                 line.strip().lstrip("0123456789.-) ")
                 for line in response.content.split("\n")
                 if line.strip() and len(line.strip()) > 5
-            ][:settings.max_sub_tasks]
+            ][:max_sub]
             reasoning = "降级文本解析"
 
     logger.info(f"📋 Orchestrator 生成 {len(sub_tasks)} 个子任务: {sub_tasks}")
@@ -219,6 +228,7 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
             _make_event("planning", f"规划完成: 生成 {len(sub_tasks)} 个子任务 ({reasoning})"),
         ],
     }
+
 
 
 # ============================================================================
@@ -236,11 +246,13 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
     输入: SearchWorkerInput (由 Send 传入)
     输出: 累加到 ResearchState.research_results 和 sources
     """
+    from ..config import temp_max_search_review_retries
     settings = get_settings()
     llm = _get_llm()
     sub_task = state.get("sub_task", "")
     topic = state.get("topic", "")
-    max_retries = settings.max_search_review_retries
+    max_retries = temp_max_search_review_retries.get() or settings.max_search_review_retries
+
 
     logger.info(f"🔍 Search Agent 启动: {sub_task}")
 

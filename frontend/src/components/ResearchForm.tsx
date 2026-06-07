@@ -175,12 +175,6 @@ export function ResearchForm({ onSubmit, isLoading }: ResearchFormProps) {
             />
             <Globe size={14} style={{ color: searchEngine === 'international' ? 'var(--secondary)' : 'var(--text-muted)', flexShrink: 0 }} />
             <span style={{ whiteSpace: 'nowrap' }}>国际搜索</span>
-            <span style={{
-              fontSize: '0.65rem',
-              color: 'var(--text-muted)',
-              opacity: 0.7,
-              whiteSpace: 'nowrap',
-            }}>需TUN</span>
           </label>
         </div>
 

@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
-import { Brain, AlertCircle } from 'lucide-react';
+import { Brain, AlertCircle, Settings } from 'lucide-react';
 import { ResearchForm } from './components/ResearchForm';
 import { GraphVisualizer } from './components/GraphVisualizer';
 import { ResultDisplay } from './components/ResultDisplay';
 import { PlanReview } from './components/PlanReview';
 import { streamPlan, streamExecute, type StreamEvent } from './api/research';
+import { SettingsModal } from './components/SettingsModal';
 
 function App() {
   const [topic, setTopic] = useState('');
@@ -13,6 +14,48 @@ function App() {
   const [uploadedContext, setUploadedContext] = useState('');
   const [isResearching, setIsResearching] = useState(false);
   const [error, setError] = useState('');
+
+  // 设置面板状态
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isForceSettings, setIsForceSettings] = useState(false);
+
+  // 初始化时强校验是否已配置密钥
+  useEffect(() => {
+    const checkSettings = async () => {
+      const saved = localStorage.getItem('deeper_research_settings');
+      let needsConfig = true;
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.llm_api_key && parsed.anysearch_api_key) {
+            needsConfig = false;
+          }
+        } catch (e) {}
+      }
+
+
+      if (needsConfig) {
+        // 本地没填，去后端查询是否已配有全局 Key (.env)
+        try {
+          const res = await fetch('http://localhost:8000/health');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.has_global_key === false) {
+              // 后端没配且本地也没配，强制弹出
+              setIsForceSettings(true);
+              setIsSettingsOpen(true);
+            }
+          }
+        } catch (err) {
+          console.error("检查健康状态失败，默认弹出设置:", err);
+          setIsForceSettings(true);
+          setIsSettingsOpen(true);
+        }
+      }
+    };
+    checkSettings();
+  }, []);
+
 
   // Graph State
   const [phase, setPhase] = useState('idle');
@@ -315,14 +358,49 @@ function App() {
   return (
     <div className="app-container">
       {/* Header */}
-      <header className="header">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--primary-light)', color: 'var(--primary)', width: '48px', height: '48px', borderRadius: 'var(--radius-md)' }}>
-          <Brain size={28} />
+      <header className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--primary-light)', color: 'var(--primary)', width: '48px', height: '48px', borderRadius: 'var(--radius-md)' }}>
+            <Brain size={28} />
+          </div>
+          <div>
+            <h1 className="header-title">DeeperResearch</h1>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>多智能体 AI 研究系统</p>
+          </div>
         </div>
-        <div>
-          <h1 className="header-title">DeeperResearch</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', margin: 0 }}>多智能体 AI 研究系统</p>
-        </div>
+
+        {/* 顶部设置按钮 */}
+        <button
+          onClick={() => {
+            setIsForceSettings(false);
+            setIsSettingsOpen(true);
+          }}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.4rem',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid var(--panel-border)',
+            color: 'var(--text-main)',
+            padding: '0.55rem 0.9rem',
+            borderRadius: '8px',
+            fontSize: '0.88rem',
+            cursor: 'pointer',
+            fontWeight: 500,
+            transition: 'all 0.2s',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.borderColor = 'var(--primary)';
+            e.currentTarget.style.background = 'rgba(99, 102, 241, 0.08)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = 'var(--panel-border)';
+            e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+          }}
+        >
+          <Settings size={16} />
+          <span>研究设置</span>
+        </button>
       </header>
 
       {/* Main Layout */}
@@ -348,6 +426,13 @@ function App() {
           {renderRightPanel()}
         </div>
       </main>
+
+      <SettingsModal 
+        isOpen={isSettingsOpen} 
+        onClose={() => setIsSettingsOpen(false)} 
+        isForce={isForceSettings} 
+      />
+
     </div>
   );
 }

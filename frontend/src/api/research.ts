@@ -20,6 +20,32 @@ export interface UploadResult {
 }
 
 /**
+ * 辅助函数：从 localStorage 中读取用户的自定义 API Key 等配置，并构建透传 Headers
+ */
+function _buildConfigHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const saved = localStorage.getItem('deeper_research_settings');
+  if (saved) {
+    try {
+      const settings = JSON.parse(saved);
+      if (settings.llm_api_key) headers['x-llm-api-key'] = settings.llm_api_key;
+      if (settings.llm_base_url) headers['x-llm-base-url'] = settings.llm_base_url;
+      if (settings.llm_model) headers['x-llm-model'] = settings.llm_model;
+      if (settings.anysearch_api_key) headers['x-anysearch-api-key'] = settings.anysearch_api_key;
+      
+      // 注入三个研究参数
+      if (settings.max_sub_tasks) headers['x-max-sub-tasks'] = String(settings.max_sub_tasks);
+      if (settings.max_search_results) headers['x-max-search-results'] = String(settings.max_search_results);
+      if (settings.max_search_review_retries !== undefined) headers['x-max-search-review-retries'] = String(settings.max_search_review_retries);
+    } catch (e) {
+      console.error("解析本地设置失败:", e);
+    }
+  }
+  return headers;
+}
+
+
+/**
  * 文件上传: 将各种格式文件转换为 Markdown
  */
 export async function uploadFile(file: File): Promise<UploadResult> {
@@ -28,6 +54,7 @@ export async function uploadFile(file: File): Promise<UploadResult> {
 
   const response = await fetch('http://localhost:8000/api/upload', {
     method: 'POST',
+    headers: _buildConfigHeaders(), // 透传 API Key，供可能用到的多模态处理
     body: formData,
   });
 
@@ -51,12 +78,18 @@ function _streamSSE(
 ) {
   const abortController = new AbortController();
 
+  const headers = {
+    'Content-Type': 'application/json',
+    ..._buildConfigHeaders() // 注入用户本地大模型与检索 API 配置
+  };
+
   fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers,
     body: JSON.stringify(body),
     signal: abortController.signal
-  }).then(async response => {
+  })
+.then(async response => {
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }

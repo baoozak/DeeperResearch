@@ -1,8 +1,8 @@
 """
 搜索工具模块。
-支持两种搜索引擎:
-1. DashScope 联网搜索 (domestic) — 国内网络零障碍，搜索+LLM理解一体化
-2. DuckDuckGo 搜索 (international) — 国际搜索引擎，需要代理/TUN
+支持两种网络检索引擎（统一由 AnySearch API 驱动，国内环境无需科学上网代理）：
+1. 国内搜索 (domestic) — 聚焦中文优质数据源
+2. 国际搜索 (international) — 聚焦英文/全球前沿文献（支持检索词自动翻译优化）
 
 通过统一入口 web_search() 屏蔽差异，上层节点无需关心具体实现。
 """
@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Optional
 
+import httpx
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
@@ -76,77 +77,68 @@ def _extract_sources_from_text(text: str) -> list[SearchResult]:
 
 def _get_search_client() -> AsyncOpenAI:
     """获取用于联网搜索的 AsyncOpenAI 客户端"""
+    from ..config import temp_api_key, temp_base_url, get_settings
     settings = get_settings()
     return AsyncOpenAI(
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=temp_api_key.get() or settings.openai_api_key,
+        base_url=temp_base_url.get() or settings.openai_base_url,
     )
 
-
 # ============================================================================
-# DashScope 联网搜索 (国内) — 搜索+LLM理解一体化
+# AnySearch 统一网络检索底座
 # ============================================================================
 
-async def _web_search_dashscope(
+async def _call_anysearch_api(
     query: str,
-    system_prompt: str = "",
-    search_strategy: str = "max",
-) -> tuple[str, list[SearchResult]]:
+    max_results: int = 5
+) -> list[SearchResult]:
     """
-    阿里云 DashScope 联网搜索 + LLM 理解一体化。
-    一次 API 调用 = 搜索 + 理解 + 摘要。
-
-    Args:
-        query: 用户提示词
-        system_prompt: 系统提示词
-        search_strategy: 搜索策略 ("turbo"=快速 / "max"=全面)
-
-    Returns:
-        (model_response_text, extracted_sources)
+    底层调用 AnySearch API 进行检索并返回 SearchResult 列表。
     """
+    from ..config import temp_anysearch_key, get_settings
     settings = get_settings()
-    client = _get_search_client()
+    api_key = temp_anysearch_key.get() or settings.anysearch_api_key
 
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": query})
+    headers = {
+        "Content-Type": "application/json"
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "query": query,
+        "max_results": max_results
+    }
 
     try:
-        logger.info(f"🔍 [DashScope] 联网搜索: {query[:80]}...")
-
-        response = await client.chat.completions.create(
-            model=settings.model_name,
-            messages=messages,
-            temperature=settings.temperature,
-            extra_body={
-                "enable_search": True,
-                "search_options": {
-                    "forced_search": True,
-                    "search_strategy": search_strategy,
-                },
-            },
-        )
-
-        content = response.choices[0].message.content or ""
-        sources = _extract_sources_from_text(content)
-
-        logger.info(f"✅ [DashScope] 搜索完成: {query[:50]}... ({len(sources)} 个来源)")
-        return content, sources
-
+        logger.info(f"🌐 [AnySearch] 发起检索: {query[:60]}...")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post("https://api.anysearch.com/v1/search", json=payload, headers=headers)
+            if response.status_code == 200:
+                resp_json = response.json()
+                # 兼容 AnySearch 官方带 "data" 包装与不带包装的响应结构
+                data_payload = resp_json.get("data") if isinstance(resp_json.get("data"), dict) else resp_json
+                results = []
+                for item in data_payload.get("results", []):
+                    results.append(SearchResult(
+                        title=item.get("title") or item.get("name") or "",
+                        snippet=item.get("snippet") or item.get("body") or "",
+                        url=item.get("url") or item.get("href") or ""
+                    ))
+                logger.info(f"✅ [AnySearch] 检索完成，共获取 {len(results)} 条记录")
+                return results
+            else:
+                logger.error(f"❌ [AnySearch] API 请求失败，状态码: {response.status_code}, 响应: {response.text}")
+                return []
     except Exception as e:
-        logger.error(f"❌ [DashScope] 搜索失败: {e}")
-        return "", []
+        logger.error(f"❌ [AnySearch] 异常: {e}")
+        return []
 
-
-# ============================================================================
-# DuckDuckGo 搜索 (国际) — 关键词翻译 + 搜索 + LLM 总结 三步式
-# ============================================================================
 
 async def _translate_keywords_to_english(keywords: str) -> str:
     """
     轻量级关键词翻译: 中文 → 英文搜索关键词。
-    用于确保 DDG 国际搜索能命中英文/国际来源。
+    用于确保国际搜索能命中英文/国际来源。
     如果关键词已经是英文则直接返回。
     """
     # 快速检测: 如果没有中文字符，直接返回
@@ -172,106 +164,77 @@ async def _translate_keywords_to_english(keywords: str) -> str:
         logger.warning(f"⚠️ 关键词翻译失败，使用原始关键词: {e}")
         return keywords
 
-async def _web_search_duckduckgo(
+
+async def _web_search_unified(
     query: str,
     system_prompt: str = "",
     search_keywords: str = "",
     max_results: int = 5,
+    region: str = "wt-wt"
 ) -> tuple[str, list[SearchResult]]:
     """
-    DuckDuckGo 搜索 + LLM 总结 (两步式)。
-    Step 1: 调用 DuckDuckGo API 获取原始搜索结果 (使用 search_keywords)
-    Step 2: 将结果喂给 LLM 做结构化总结 (使用 query 作为 LLM prompt)
-
-    ⚠️ 需要能访问国际互联网 (代理/TUN)。
-
-    Args:
-        query: LLM 总结阶段的用户提示词 (完整的 prompt)
-        system_prompt: LLM 总结的系统提示词
-        search_keywords: DDG 实际搜索的关键词 (简短)，若为空则从 query 中提取
-        max_results: 最大搜索结果数
-
-    Returns:
-        (llm_summary_text, extracted_sources)
+    通过 AnySearch 搜索，并结合用户配置的大模型做内容提炼与总结。
     """
-    from ddgs import DDGS
-
     settings = get_settings()
-    sources: list[SearchResult] = []
+    actual_keywords = search_keywords or query
 
-    try:
-        # ===== Step 0: 关键词翻译 (中文 → 英文) =====
-        # 国际搜索的核心: 用英文关键词搜索，才能获取国际来源
-        actual_keywords = search_keywords or query
-        en_keywords = await _translate_keywords_to_english(actual_keywords)
-        logger.info(f"🔍 [DuckDuckGo] 原始关键词: {actual_keywords[:60]} → 英文: {en_keywords[:60]}")
+    # 如果是国际搜索，则进行英文翻译
+    if region == "wt-wt":
+        actual_keywords = await _translate_keywords_to_english(actual_keywords)
+        logger.info(f"🔍 [AnySearch] 国际检索关键词转换: {query[:50]} -> 英文: {actual_keywords[:50]}")
 
-        # ===== Step 1: DuckDuckGo 搜索 =====
-        # region='wt-wt' 表示全球无地区偏好
-        loop = asyncio.get_event_loop()
-        ddg_results = await loop.run_in_executor(
-            None,
-            lambda: DDGS().text(en_keywords, region='wt-wt', max_results=max_results)
-        )
+    # Step 1: 调用 AnySearch 获取网页检索结果
+    sources = await _call_anysearch_api(actual_keywords, max_results=max_results)
+    if not sources:
+        logger.warning(f"⚠️ [AnySearch] 检索无结果: {actual_keywords}")
+        return "", []
 
-        if not ddg_results:
-            logger.warning(f"⚠️ [DuckDuckGo] 搜索无结果: {en_keywords}")
-            return "", []
+    # Step 2: 拼装搜索结果为上下文喂给 LLM 做总结
+    search_context = "\n\n".join([
+        f"### 来源 {i+1}: [{item.title}]({item.url})\n{item.snippet}"
+        for i, item in enumerate(sources)
+    ])
 
-        # 提取结构化来源
-        sources = [
-            SearchResult(
-                title=r.get("title", ""),
-                snippet=r.get("body", "")[:200],
-                url=r.get("href", ""),
-            )
-            for r in ddg_results
-            if r.get("href")
-        ]
+    llm_prompt = f"""以下是关于"{query}"的网页检索结果，请基于这些检索结果进行结构化的总结分析。
 
-        # ===== Step 2: 将搜索结果喂给 LLM 做总结 =====
-        # 拼装搜索结果为上下文
-        search_context = "\n\n".join([
-            f"### 来源 {i+1}: [{r.get('title', '未知')}]({r.get('href', '')})\n{r.get('body', '')}"
-            for i, r in enumerate(ddg_results)
-        ])
-
-        llm_prompt = f"""以下是关于"{query}"的搜索结果，请基于这些搜索结果进行分析和总结。
-
-## 搜索结果:
+## 检索结果:
 {search_context}
 
-请基于以上搜索结果进行分析。⚠️ 每条要点后必须附上来源链接 URL。"""
+请基于以上检索结果进行分析。⚠️ 每条关键要点后必须附上对应的来源链接 Markdown 格式，例如 [来源 1](URL)。"""
 
+    try:
         client = _get_search_client()
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": llm_prompt})
 
+        from ..config import temp_model
+        model_name = temp_model.get() or settings.model_name
+
         response = await client.chat.completions.create(
-            model=settings.model_name,
+            model=model_name,
             messages=messages,
             temperature=settings.temperature,
         )
 
         content = response.choices[0].message.content or ""
 
-        # 从 LLM 响应中额外提取来源（可能有 LLM 自己补充的）
+        # 从大模型提炼出的文字中补充提取可能遗漏的来源
         text_sources = _extract_sources_from_text(content)
-        # 合并去重: DDG 原始来源 + LLM 响应中的来源
         seen_urls = {s.url for s in sources}
         for ts in text_sources:
             if ts.url not in seen_urls:
                 sources.append(ts)
                 seen_urls.add(ts.url)
 
-        logger.info(f"✅ [DuckDuckGo] 搜索+总结完成: {query[:50]}... ({len(sources)} 个来源)")
         return content, sources
 
     except Exception as e:
-        logger.error(f"❌ [DuckDuckGo] 搜索失败: {e}")
-        return "", []
+        logger.error(f"❌ [LLM 总结提炼] 失败: {e}")
+        # 降级处理：如果没有大模型提炼，直接将来源拼接输出
+        fallback_content = "### 网页搜索快照:\n\n" + search_context
+        return fallback_content, sources
 
 
 # ============================================================================
@@ -284,27 +247,45 @@ async def web_search(
     search_engine: str = "domestic",
     search_strategy: str = "max",
     search_keywords: str = "",
-    max_results: int = 5,
+    max_results: int = None,
 ) -> tuple[str, list[SearchResult]]:
     """
-    统一搜索入口。根据 search_engine 分发到不同实现。
+    统一搜索入口。根据 search_engine 分发国内和国际搜索。
 
     Args:
-        query: 搜索关键词/提示词 (对 DashScope 直接使用，对 DDG 作为 LLM 总结 prompt)
+        query: 检索关键词或总结 Prompt
         system_prompt: 系统提示词
-        search_engine: "domestic" (DashScope) 或 "international" (DuckDuckGo)
-        search_strategy: DashScope 专用搜索策略
-        search_keywords: DDG 专用的简短搜索关键词，若为空自动从 query 中使用
-        max_results: DuckDuckGo 专用最大结果数
-
-    Returns:
-        (summary_text, extracted_sources)
+        search_engine: "domestic" (国内搜索) 或 "international" (国际搜索)
+        search_strategy: 搜索策略（AnySearch 下兼容忽略）
+        search_keywords: 专用的简短检索词，若为空则直接从 query 提取
+        max_results: 最大搜索条数
     """
+    if max_results is None:
+        from ..config import temp_max_search_results, get_settings
+        settings = get_settings()
+        max_results = temp_max_search_results.get() or settings.max_search_results
+
     if search_engine == "international":
-        return await _web_search_duckduckgo(query, system_prompt, search_keywords, max_results)
+        # 国际搜索：指定 region="wt-wt" (全球区)
+        return await _web_search_unified(
+            query=query,
+            system_prompt=system_prompt,
+            search_keywords=search_keywords,
+            max_results=max_results,
+            region="wt-wt"
+        )
     else:
-        return await _web_search_dashscope(query, system_prompt, search_strategy)
+        # 国内搜索：指定 region="cn" (中文/中国区)
+        return await _web_search_unified(
+            query=query,
+            system_prompt=system_prompt,
+            search_keywords=search_keywords,
+            max_results=max_results,
+            region="cn"
+        )
 
 
-# 保留旧函数名作为别名，避免其他地方的直接引用报错
-web_search_llm = _web_search_dashscope
+# 别名兼容，避免其他文件调用报错
+web_search_llm = web_search
+_web_search_dashscope = web_search
+_web_search_duckduckgo = web_search

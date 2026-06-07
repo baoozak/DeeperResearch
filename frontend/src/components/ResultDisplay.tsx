@@ -2,30 +2,150 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { FileText, Download, ChevronDown, ChevronUp, Globe } from 'lucide-react';
 import mermaid from 'mermaid';
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
-// 初始化深度定制的赛博暗色系主题
+// ── Mermaid 暗色主题初始化 ──────────────────────────────
+// 使用 base 主题 + 全面覆盖 themeVariables，彻底接管所有节点的颜色
+const DARK_NODE_BG = '#0f172a';       // 节点背景 — 极深海军蓝
+const DARK_NODE_BORDER = '#4f46e5';   // 节点边框 — 靛蓝色
+const LIGHT_TEXT = '#e2e8f0';         // 节点文字 — 高对比度亮灰
+const LINE_COLOR = '#6366f1';         // 连线颜色 — 靛蓝
+const LABEL_BG = '#1e1b4b';          // 标签背景 — 深紫
+
 mermaid.initialize({
   startOnLoad: false,
   theme: 'base',
   securityLevel: 'loose',
   themeVariables: {
-    fontFamily: 'Inter, system-ui, Avenir, Helvetica, Arial, sans-serif',
-    primaryColor: 'rgba(79, 70, 229, 0.15)', // 透明靛蓝背景
-    primaryTextColor: '#828282ff', // 文字
-    primaryBorderColor: '#4f46e5', // 主色边框
-    lineColor: '#818cf8', // 稍微提亮的线条
-    secondaryColor: 'rgba(16, 185, 129, 0.1)', // 辅色用暗翡翠绿
-    tertiaryColor: 'rgba(244, 63, 94, 0.1)', // 三级色用暗玫瑰红
-    noteBkgColor: '#27272a', 
-    noteTextColor: '#e4e4e7',
-    noteBorderColor: '#3f3f46',
-    background: 'transparent', // 设定透明背景更好地融入卡片
-    clusterBkg: 'rgba(99, 102, 241, 0.03)',
-    clusterBorder: 'rgba(99, 102, 241, 0.2)',
-    // 节点默认边框曲率
+    fontFamily: 'Inter, system-ui, -apple-system, sans-serif',
+    fontSize: '14px',
+    // 全局背景
+    darkMode: true,
+    background: 'transparent',
+    mainBkg: DARK_NODE_BG,
+    // 节点样式 — 覆盖所有 0~8 号色阶
+    primaryColor: DARK_NODE_BG,
+    primaryBorderColor: DARK_NODE_BORDER,
+    primaryTextColor: LIGHT_TEXT,
+    secondaryColor: DARK_NODE_BG,
+    secondaryBorderColor: '#6366f1',
+    secondaryTextColor: LIGHT_TEXT,
+    tertiaryColor: DARK_NODE_BG,
+    tertiaryBorderColor: '#818cf8',
+    tertiaryTextColor: LIGHT_TEXT,
+    // 连线
+    lineColor: LINE_COLOR,
+    // 文字
+    textColor: LIGHT_TEXT,
+    // 标签
+    edgeLabelBackground: LABEL_BG,
+    // 节点颜色 (0-8 全覆盖以拦截所有 classDef 变体)
+    nodeBorder: DARK_NODE_BORDER,
+    clusterBkg: 'rgba(15,23,42,0.6)',
+    clusterBorder: '#334155',
+    titleColor: '#f1f5f9',
+    // 其他常见类型的节点覆盖
+    noteTextColor: LIGHT_TEXT,
+    noteBkgColor: DARK_NODE_BG,
+    noteBorderColor: DARK_NODE_BORDER,
+    // 类图
+    classText: LIGHT_TEXT,
+    // 状态图
+    labelColor: LIGHT_TEXT,
+    altBackground: DARK_NODE_BG,
   }
 });
+
+/**
+ * 清洗 Mermaid 源码中所有 AI 自定义的颜色指令。
+ * 目标：不管模型产出了什么 `style` / `classDef` / `fill` 声明，
+ * 全部替换为统一的暗色方案，仅保留 stroke 的色相（但也降饱和度）。
+ */
+function sanitizeMermaidSource(raw: string): string {
+  return raw
+    // 1. 完整删除所有 classDef 行（它们通常定义亮色节点类）
+    .replace(/^\s*classDef\s+.+$/gm, '')
+    // 2. 完整删除所有 class 指令行（将节点绑定到 classDef）
+    .replace(/^\s*class\s+\S+\s+\S+\s*$/gm, '')
+    // 3. 删除 style 指令行中的颜色定义（style NodeId fill:#xxx,stroke:#yyy...）
+    .replace(/^\s*style\s+\S+\s+.+$/gm, '')
+    // 4. 兜底：将内联 fill 参数全部改为暗色（处理 :::  或 ::: 语法）
+    .replace(/fill\s*:\s*#[0-9a-fA-F]{3,8}/g, `fill:${DARK_NODE_BG}`)
+    .replace(/fill\s*:\s*rgb[a]?\([^)]+\)/g, `fill:${DARK_NODE_BG}`)
+    .replace(/fill\s*:\s*[a-zA-Z]+(?=[,;\s\n])/g, `fill:${DARK_NODE_BG}`);
+}
+
+/**
+ * 渲染后的终极保障：直接遍历 SVG DOM，
+ * 强制修正所有节点图形和文字的内联 style 属性。
+ * 这是最高优先级的覆盖，不受 CSS specificity 和 !important 限制。
+ */
+function forceRecolorSvg(container: HTMLElement): void {
+  const svg = container.querySelector('svg');
+  if (!svg) return;
+
+  // 强制修正所有节点的图形元素（rect / polygon / circle / ellipse / path）
+  const shapeSelectors = [
+    'g.node rect', 'g.node polygon', 'g.node circle',
+    'g.node ellipse', 'g.node path',
+    '.node rect', '.node polygon', '.node circle',
+    '.node ellipse', '.node path',
+  ];
+  svg.querySelectorAll(shapeSelectors.join(',')).forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.fill = DARK_NODE_BG;
+    htmlEl.style.fillOpacity = '0.95';
+    htmlEl.style.stroke = DARK_NODE_BORDER;
+    htmlEl.style.strokeWidth = '2px';
+    // 同时清除 SVG 属性层级的 fill（比 CSS 优先级更高）
+    el.setAttribute('fill', DARK_NODE_BG);
+    el.setAttribute('stroke', DARK_NODE_BORDER);
+  });
+
+  // 强制修正所有节点内的文字
+  svg.querySelectorAll('g.node text, .node text').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.fill = LIGHT_TEXT;
+    htmlEl.style.fontWeight = '500';
+    el.setAttribute('fill', LIGHT_TEXT);
+  });
+
+  // 强制修正标题文字
+  svg.querySelectorAll('text.titleText, .title, text[class*="title"]').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.fill = '#f1f5f9';
+    htmlEl.style.fontWeight = '600';
+    el.setAttribute('fill', '#f1f5f9');
+  });
+
+  // 修正边标签的背景和文字
+  svg.querySelectorAll('.edgeLabel rect').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.fill = LABEL_BG;
+    htmlEl.style.opacity = '0.95';
+    el.setAttribute('fill', LABEL_BG);
+  });
+  svg.querySelectorAll('.edgeLabel span, .edgeLabel text').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.color = '#cbd5e1';
+    htmlEl.style.fill = '#cbd5e1';
+    htmlEl.style.fontWeight = '500';
+  });
+
+  // 修正连线颜色
+  svg.querySelectorAll('.edgePath path, .flowchart-link').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.stroke = 'rgba(99,102,241,0.45)';
+    el.setAttribute('stroke', 'rgba(99,102,241,0.45)');
+  });
+
+  // 修正箭头颜色
+  svg.querySelectorAll('marker path').forEach((el) => {
+    const htmlEl = el as HTMLElement;
+    htmlEl.style.fill = LINE_COLOR;
+    el.setAttribute('fill', LINE_COLOR);
+  });
+}
 
 const Mermaid = ({ chart }: { chart: string }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -36,8 +156,15 @@ const Mermaid = ({ chart }: { chart: string }) => {
         try {
           mermaid.mermaidAPI.reset();
           const id = `mermaid-${Math.random().toString(36).substring(7)}`;
-          const { svg } = await mermaid.render(id, chart);
+          
+          // 第一层防御：清洗源码中的自定义颜色
+          const cleanChart = sanitizeMermaidSource(chart);
+
+          const { svg } = await mermaid.render(id, cleanChart);
           containerRef.current.innerHTML = svg;
+
+          // 第三层防御：直接操作 DOM，强制统一颜色（最高优先级）
+          forceRecolorSvg(containerRef.current);
         } catch (error) {
           console.error("Mermaid 解析失败:", error);
           if (containerRef.current) {
@@ -49,7 +176,56 @@ const Mermaid = ({ chart }: { chart: string }) => {
     renderChart();
   }, [chart]);
 
-  return <div ref={containerRef} style={{ display: 'flex', justifyContent: 'center', margin: '1.5rem 0', overflowX: 'auto' }} />;
+  return (
+    <div className="mermaid-graph-wrapper" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '1.5rem 0', overflowX: 'auto', width: '100%', background: 'transparent' }}>
+      {/* 第二层防御：CSS !important 兜底（处理动态添加的元素） */}
+      <style>{`
+        pre:has(.mermaid-graph-wrapper),
+        pre:has(svg[id^="mermaid-"]) {
+          background: transparent !important;
+          border: none !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          box-shadow: none !important;
+        }
+        svg[id^="mermaid-"] g.node rect,
+        svg[id^="mermaid-"] g.node polygon,
+        svg[id^="mermaid-"] g.node circle,
+        svg[id^="mermaid-"] g.node ellipse,
+        svg[id^="mermaid-"] g.node path,
+        svg[id^="mermaid-"] .node rect,
+        svg[id^="mermaid-"] .node polygon,
+        svg[id^="mermaid-"] .node circle,
+        svg[id^="mermaid-"] .node ellipse,
+        svg[id^="mermaid-"] .node path {
+          fill: ${DARK_NODE_BG} !important;
+          fill-opacity: 0.95 !important;
+          stroke: ${DARK_NODE_BORDER} !important;
+          stroke-width: 2px !important;
+        }
+        svg[id^="mermaid-"] g.node text,
+        svg[id^="mermaid-"] .node text {
+          fill: ${LIGHT_TEXT} !important;
+          font-weight: 500 !important;
+        }
+        svg[id^="mermaid-"] text.titleText,
+        svg[id^="mermaid-"] .title {
+          fill: #f1f5f9 !important;
+          font-weight: 600 !important;
+          font-size: 1.1rem !important;
+        }
+        svg[id^="mermaid-"] .edgeLabel rect {
+          fill: ${LABEL_BG} !important;
+          opacity: 0.95 !important;
+        }
+        svg[id^="mermaid-"] .edgeLabel span {
+          color: #cbd5e1 !important;
+          font-weight: 500 !important;
+        }
+      `}</style>
+      <div ref={containerRef} style={{ width: '100%', display: 'flex', justifyContent: 'center' }} />
+    </div>
+  );
 };
 
 interface ResultDisplayProps {
@@ -249,6 +425,21 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
+              // 强力修复法则：重写 pre 渲染器。如果子元素包含 Mermaid 流程图（无论是原始 className 还是已替换的 Mermaid 组件），彻底抹去预设的灰色盒子背景与边框！
+              pre(props: any) {
+                const { children, ...rest } = props;
+                const isMermaid = React.Children.toArray(children).some(
+                  (child: any) => 
+                    child?.props?.className?.includes('mermaid') || 
+                    child?.type === Mermaid || 
+                    child?.type?.name === 'Mermaid'
+                );
+                
+                if (isMermaid) {
+                  return <div style={{ background: 'transparent', border: 'none', padding: 0, margin: 0 }}>{children}</div>;
+                }
+                return <pre {...rest}>{children}</pre>;
+              },
               code(props: any) {
                 const { children, className, node, ...rest } = props;
                 const match = /language-(\w+)/.exec(className || '');

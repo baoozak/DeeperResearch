@@ -60,6 +60,54 @@ app.add_middleware(
 
 
 # ============================================================================
+# 请求级临时配置中间件
+# ============================================================================
+from fastapi import Request
+from .config import (
+    temp_api_key,
+    temp_base_url,
+    temp_model,
+    temp_anysearch_key,
+    temp_max_sub_tasks,
+    temp_max_search_results,
+    temp_max_search_review_retries
+)
+
+@app.middleware("http")
+async def temp_config_middleware(request: Request, call_next):
+    def _parse_int(val) -> int:
+        try:
+            return int(val) if val else 0
+        except ValueError:
+            return 0
+
+    # 提取前端发来的配置 Header
+    t1 = temp_api_key.set(request.headers.get("x-llm-api-key", ""))
+    t2 = temp_base_url.set(request.headers.get("x-llm-base-url", ""))
+    t3 = temp_model.set(request.headers.get("x-llm-model", ""))
+    t4 = temp_anysearch_key.set(request.headers.get("x-anysearch-api-key", ""))
+    
+    t5 = temp_max_sub_tasks.set(_parse_int(request.headers.get("x-max-sub-tasks", "")))
+    t6 = temp_max_search_results.set(_parse_int(request.headers.get("x-max-search-results", "")))
+    t7 = temp_max_search_review_retries.set(_parse_int(request.headers.get("x-max-search-review-retries", "")))
+    
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # 重置上下文以防泄露
+        temp_api_key.reset(t1)
+        temp_base_url.reset(t2)
+        temp_model.reset(t3)
+        temp_anysearch_key.reset(t4)
+        temp_max_sub_tasks.reset(t5)
+        temp_max_search_results.reset(t6)
+        temp_max_search_review_retries.reset(t7)
+
+
+
+
+# ============================================================================
 # 请求/响应模型
 # ============================================================================
 
@@ -113,8 +161,10 @@ async def health_check():
         "version": "2.1.0",
         "model": settings.model_name,
         "base_url": settings.openai_base_url,
+        "has_global_key": settings.openai_api_key != "sk-placeholder" and bool(settings.openai_api_key),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
 
 
 # ============================================================================
@@ -427,6 +477,9 @@ async def plan_research(request: PlanRequest):
             else:
                 requirements_block = "\n"
 
+            # 获取动态最大子任务数
+            max_sub = temp_max_sub_tasks.get() or settings.max_sub_tasks
+
             if is_replan:
                 # 使用重规划 Prompt
                 previous_plan_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(request.previous_plan)])
@@ -434,7 +487,7 @@ async def plan_research(request: PlanRequest):
                     topic=request.topic,
                     previous_plan=previous_plan_text,
                     feedback=request.feedback,
-                    max_sub_tasks=settings.max_sub_tasks,
+                    max_sub_tasks=max_sub,
                     requirements_block=requirements_block,
                 )
             else:
@@ -446,11 +499,11 @@ async def plan_research(request: PlanRequest):
 
                 user_prompt = ORCHESTRATOR_USER_INITIAL.format(
                     topic=request.topic,
-                    max_sub_tasks=settings.max_sub_tasks,
+                    max_sub_tasks=max_sub,
                     requirements_block=requirements_block,
                 ) + context_block
 
-            system_prompt = ORCHESTRATOR_SYSTEM.format(max_sub_tasks=settings.max_sub_tasks)
+            system_prompt = ORCHESTRATOR_SYSTEM.format(max_sub_tasks=max_sub)
 
             # 调用 LLM 获取结构化规划
             try:
@@ -460,7 +513,7 @@ async def plan_research(request: PlanRequest):
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt),
                 ])
-                sub_tasks = result.sub_tasks[:settings.max_sub_tasks]
+                sub_tasks = result.sub_tasks[:max_sub]
                 reasoning = result.reasoning
             except Exception as e:
                 logger.warning(f"结构化输出失败，回退到文本解析: {e}")
@@ -471,14 +524,14 @@ async def plan_research(request: PlanRequest):
                 ])
                 try:
                     data = json.loads(response.content)
-                    sub_tasks = data.get("sub_tasks", [])[:settings.max_sub_tasks]
+                    sub_tasks = data.get("sub_tasks", [])[:max_sub]
                     reasoning = data.get("reasoning", "")
                 except json.JSONDecodeError:
                     sub_tasks = [
                         line.strip().lstrip("0123456789.-) ")
                         for line in response.content.split("\n")
                         if line.strip() and len(line.strip()) > 5
-                    ][:settings.max_sub_tasks]
+                    ][:max_sub]
                     reasoning = "降级文本解析"
 
             yield _sse_format("event", _make_event("planning", f"规划完成: 生成 {len(sub_tasks)} 个子任务 ({reasoning})"))

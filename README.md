@@ -4,8 +4,8 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 
 ## ✨ 核心特性
 
-- **🧠 模型即搜索 (Search-In-LLM)**：深度集成阿里云 DashScope 内置的 `enable_search` 搜索引擎，一次调用完成检索与提炼的无缝协同。
-- **🌐 双搜索引擎切换**：支持 **国内搜索（DashScope）** 与 **国际搜索（DuckDuckGo）** 互斥单选切换。国际搜索模式下自动将中文关键词翻译为英文、设置全球无区域偏好，确保命中国际来源。
+- **🧠 全模型即搜索 (Model-Agnostic Search)**：统一使用 AnySearch 检索底座，彻底去除大模型联网插件的厂商绑定，支持自主切换并使用 DeepSeek、OpenAI 等各种主流大模型作为后端。
+- **🌐 零门槛免代理国内/国际搜索**：双引擎全部由 AnySearch 云端驱动，国内运行环境无需挂载任何科学上网 TUN 代理即可稳定直连全球检索；国际检索下自动将中文关键词意译翻译，保证英文高纯度文献的检索与召回。
 - **⚙️ 多智能体协同 (LangGraph)**：
   - **哨兵侦察 (Triage)**：根据用户主命题发起前置预搜，提炼时效背景（用于打破规划时空幻觉）。
   - **全局规划师 (Orchestrator)**：洞悉破冰资料，自动将命题切解为 3-5 个独立且完备的专业子任务。
@@ -29,7 +29,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **引擎之心**：`LangGraph`, `LangChain`, `OpenAI SDK`
 - **后端服务**：`Python 3.9+`, `FastAPI`, `Pydantic`, `Uvicorn`
 - **前端可视化**：`React 18`, `TypeScript`, `Vite`, `React-Markdown`, `Mermaid.js`
-- **搜索服务**：阿里云 `DashScope` (国内搜索) / `DuckDuckGo` (国际搜索，需 TUN/代理)
+- **搜索服务**：`AnySearch API` 统一检索引擎 (国内/国际免代理直连双通道)
 - **文件解析**：微软 `MarkItDown` (多格式文件转 Markdown)
 
 ## 📂 核心目录结构
@@ -42,17 +42,18 @@ DeeperResearch/
 │   │   ├── nodes.py          # 具体角色逻辑节点库 (Triage, Orchestrator 等)
 │   │   ├── prompts.py        # Master 级系统提示词库 (含重规划模板)
 │   │   ├── state.py          # 跨节点全局记忆与状态维持机制
-│   │   └── tools.py          # 双引擎统一搜索入口 (DashScope/DuckDuckGo) + 关键词翻译
+│   │   └── tools.py          # AnySearch 统一搜索入口 (国内/国际免代理直连)
 │   ├── main.py               # SSE 服务端 (/plan + /execute + /upload 多端点)
 │   └── config.py             # 全局环境依赖配置项
 ├── frontend/                 # 🔭 可视化交互前端
 │   ├── src/
-│   │   ├── api/              # 流式接驳事件解析引擎 (streamPlan / streamExecute)
+│   │   ├── api/              # 流式接驳事件解析引擎 (research.ts)
 │   │   ├── components/       # 解耦渲染 UI
-│   │   │   ├── PlanReview    # 调研方案审批面板 (Human-in-the-Loop)
-│   │   │   ├── GraphVisualizer  # 动态状态机可视化
-│   │   │   ├── ResultDisplay    # Markdown 报告渲染 + Mermaid 图表
-│   │   │   └── ResearchForm     # 研究目标输入表单
+│   │   │   ├── PlanReview.tsx      # 调研方案审批面板 (Human-in-the-Loop)
+│   │   │   ├── GraphVisualizer.tsx # 动态状态机可视化
+│   │   │   ├── ResultDisplay.tsx   # Markdown 报告渲染 + Mermaid 图表
+│   │   │   ├── ResearchForm.tsx    # 研究目标输入表单
+│   │   │   └── SettingsModal.tsx   # 大模型与检索参数配置面板
 │   │   ├── App.tsx           # 两段式审批流主调度器
 │   │   └── index.css         # 赛博深色系渐变设计美学
 └── .env.example              # 开放环境变量参照模板
@@ -73,11 +74,11 @@ python -m venv .venv
 pip install -r backend/requirements.txt
 ```
 
-复制配置文件并配置你自己的 API Key (请确保使用千问大模型以及填写相对应的 Endpoint)：
+创建本地运行配置文件并填写（可选：系统已支持网页端可视化配置，您完全可以直接在前端界面中录入 API Key 和修改各项参数，免去手动编辑 `.env` 的麻烦）：
 ```bash
 cp .env.example .env
 ```
-用编辑器打开 `.env` 并填写对应的信息。
+（直接保持 `.env` 为空，或不填任何 Key，直接启动服务，不影响使用！）
 
 运行 FastAPI 业务引擎：
 ```bash
@@ -94,22 +95,6 @@ npm install
 npm run dev
 ```
 按照控制台提示打开浏览器访问即可。
-
-## 🗺️ 后续可演进方向 (ROADMAP)
-
-**架构说明**：当前 DeeperResearch 主要作为个人本地使用工具，因此选择了轻量简单的直连流式通信。这种极简设计足以满足个人的独立研究需求，也避免了搭建复杂系统带来的额外维护成本。
-
-如果未来项目计划在线上部署以提供给多用户并发使用，将演进以下架构机制以保障系统的容灾和稳定性：
-
-- [ ] **异步任务队列持久化与连接恢复 (Job ID 机制)**
-  - *当前局限*：现有的流式直连（Telephony 模式）非常脆弱，在复杂的研究周期（可能达数分钟）执行生成时若浏览器手动刷新导致连接重置切断，不仅中断任务并且无法断点续传。
-  - *系统改造*：引入基于 `Redis / SQLite` 及异步任务队列 (`Celery` / `BackgroundTasks`)。前端发起任务后将拿到一个 `job_id`，利用状态轮询或重定位流式链接订阅图计算过程。即使浏览器刷新，只要持有该 `job_id` 便能瞬间重建之前运算积累的所有进度并在图上接续动画。
-- [x] **多平台搜索引擎切换 (DashScope / DuckDuckGo)**
-  - 已实现双引擎统一入口 `web_search()`，前端 Radio 互斥单选，国际搜索自动翻译关键词为英文。
-- [ ] **更多搜索引擎适配 (Adapter Pattern 解耦)**
-  - 在现有双引擎基础上进一步抽象，支持自由配置 Tavily / Bing / Google 等，以便跨任意通用型大模型运作。
-- [ ] **完整的数据库账号体系持久化**
-  - 使用数据库完全托管历史草稿与知识溯源链接的持久保存。
 
 ## 📄 开源协议 (License)
 
