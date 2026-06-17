@@ -257,17 +257,32 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
     logger.info(f"🔍 Search Agent 启动: {sub_task}")
 
     current_query = sub_task
+    tombstones: list[dict] = []  # 局部认知墓碑列表，记录当前任务下的失败历史
     all_events: list[dict] = []
     all_sources: list[dict] = []
     summary = ""
 
     for attempt in range(max_retries + 1):  # 首次 + 重试次数
+        # 组装失败路径墓碑，注入给总结大模型做避障防踩坑指示
+        tombstones_prompt = ""
+        if tombstones:
+            tombstones_prompt = "\n\n## 避障防踩坑指示 (已探明的失败历史轨迹/Tombstones):\n"
+            for idx, tb in enumerate(tombstones):
+                tombstones_prompt += f"### 失败轨迹 {idx+1}:\n"
+                tombstones_prompt += f"- **已尝试的检索词/方向**: {tb['query']}\n"
+                tombstones_prompt += f"- **被审查驳回的原因**: {tb['reason']}\n"
+                tombstones_prompt += f"- **先前获取的总结(被判无效)**:\n{tb['summary'][:300]}...\n\n"
+            tombstones_prompt += "⚠️ 请严格保证：本次回答必须采用与上述失败轨迹截然不同的角度或新增更有深度的数据，解决被拒理由。不要重复之前已判无效的内容或空话！\n"
+
         # ===== Step 1: 搜索 + 总结 (一体化) =====
         # 一次 API 调用完成: 云端搜索 → 模型理解 → 结构化总结
         user_prompt = SEARCH_SUMMARIZER_USER.format(
             sub_task=current_query,
             topic=topic,
         )
+        if tombstones_prompt:
+            user_prompt += tombstones_prompt
+
         summary, sources_extracted = await web_search(
             query=user_prompt,
             system_prompt=SEARCH_SUMMARIZER_SYSTEM,
@@ -280,6 +295,12 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
             logger.warning(f"⚠️ 搜索无结果 (尝试 {attempt + 1}): {current_query}")
             all_events.append(_make_event("searching", f"搜索无结果 (尝试 {attempt + 1}): {current_query}"))
             if attempt < max_retries:
+                # 记录这次的空搜索墓碑
+                tombstones.append({
+                    "query": current_query,
+                    "reason": "网页检索无结果或内容全空",
+                    "summary": "未获得任何实质性网页信息。"
+                })
                 current_query = f"{topic} {sub_task}"
                 continue
             else:
@@ -304,6 +325,16 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
 
         # ===== Step 2: 内部质量审查 =====
         if attempt < max_retries:  # 最后一次跳过审查，直接使用
+            tombstones_review_prompt = ""
+            if tombstones:
+                tombstones_review_prompt = "\n\n## 历史被拒轨迹对比 (Tombstones):\n"
+                for idx, tb in enumerate(tombstones):
+                    tombstones_review_prompt += f"### 失败记录 {idx+1}:\n"
+                    tombstones_review_prompt += f"- **检索方向**: {tb['query']}\n"
+                    tombstones_review_prompt += f"- **先前被驳回原因**: {tb['reason']}\n"
+                    tombstones_review_prompt += f"- **先前版本的总结草案**:\n{tb['summary'][:200]}...\n\n"
+                tombstones_review_prompt += "\n⚠️ 【质量核对指示】：请将当前新总结与上述历史被拒记录进行比对。如果发现新总结内容大同小异、并未切实解决之前的被拒原因（如仍然缺乏数据证据、依然空洞等），请继续判定 verdict = 'FAIL'，并务必提供一个方向全新、具有强烈差异化特征的新搜索关键词！\n"
+
             try:
                 structured_review = llm.with_structured_output(SearchReviewOutput)
                 review: SearchReviewOutput = await structured_review.ainvoke([
@@ -312,7 +343,7 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                         sub_task=sub_task,
                         topic=topic,
                         summary=summary,
-                    )),
+                    ) + tombstones_review_prompt),
                 ])
                 verdict = review.verdict.upper()
                 reason = review.reason
@@ -326,7 +357,7 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                             sub_task=sub_task,
                             topic=topic,
                             summary=summary,
-                        )),
+                        ) + tombstones_review_prompt),
                     ])
                     content = review_response.content.strip()
                     if content.startswith("```json"):
@@ -343,16 +374,23 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                     reason = "审查解析失败，默认通过"
                     refined_query = ""
 
-            all_events.append(_make_event("searching", f"质量审查 [{verdict}]: {reason}"))
-
             if verdict == "PASS":
                 logger.info(f"✅ Search Agent 审查通过: {sub_task}")
+                all_events.append(_make_event("searching", f"质量审查 [{verdict}]: {reason}"))
                 break
             else:
-                # 审查失败，使用优化后的关键词重搜
+                # 审查失败，记录墓碑并使用优化后的关键词重搜
+                tombstones.append({
+                    "query": current_query,
+                    "reason": reason,
+                    "summary": summary
+                })
                 current_query = refined_query if refined_query else f"{sub_task} 最新数据"
                 logger.info(f"🔄 Search Agent 审查不通过，重搜 (第 {attempt + 2} 次): {current_query}")
-                all_events.append(_make_event("searching", f"重搜关键词: {current_query}"))
+                all_events.append(_make_event(
+                    "searching",
+                    f"质量审查 [FAIL]: {reason}。已建立认知墓碑 🪦 避障，尝试第 {attempt + 2} 次重搜，关键词: {current_query}"
+                ))
                 continue
 
     logger.info(f"✅ Search Agent 完成: {sub_task} ({len(all_sources)} 个来源)")
