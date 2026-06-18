@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Eye, EyeOff, Check, X, ShieldAlert, Key, Globe, Cpu, ChevronRight, ChevronDown, Sliders } from 'lucide-react';
+import { Settings, Eye, EyeOff, Check, X, ShieldAlert, Key, Globe, Cpu, ChevronRight, ChevronDown, Sliders, FolderOpen } from 'lucide-react';
 
 
 interface SettingsModalProps {
@@ -18,6 +18,7 @@ export interface UserSettings {
   max_sub_tasks: number;
   max_search_results: number;
   max_search_review_retries: number;
+  obsidian_vault_path?: string;
 }
 
 const PROVIDER_PRESETS: Record<string, { name: string; baseUrl: string; defaultModel: string; models: string[] }> = {
@@ -48,6 +49,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [anysearchKey, setAnysearchKey] = useState('');
+  const [obsidianVaultPath, setObsidianVaultPath] = useState('');
   
   // 各供应商的历史配置字典，支持独立记忆 Key/URL/Model
   const [providerConfigs, setProviderConfigs] = useState<Record<string, { apiKey: string; baseUrl: string; model: string }>>({
@@ -109,6 +111,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
         setBaseUrl(activeBaseUrl);
         setModel(activeModel);
         setAnysearchKey(parsed.anysearch_api_key || '');
+        setObsidianVaultPath(parsed.obsidian_vault_path || '');
         
         setMaxSubTasks(parsed.max_sub_tasks !== undefined ? parsed.max_sub_tasks : 5);
         setMaxSearchResults(parsed.max_search_results !== undefined ? parsed.max_search_results : 5);
@@ -186,10 +189,12 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
       max_sub_tasks: maxSubTasks,
       max_search_results: maxSearchResults,
       max_search_review_retries: maxSearchReviewRetries,
+      obsidian_vault_path: obsidianVaultPath.trim(),
     };
 
     localStorage.setItem('deeper_research_settings', JSON.stringify(newSettings));
     localStorage.setItem('deeper_research_provider_configs', JSON.stringify(providerConfigs));
+    window.dispatchEvent(new Event('deeper_research_settings_changed'));
     
     setSaveSuccess(true);
     setErrorMsg('');
@@ -494,6 +499,32 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
                 {showAnysearchKey ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
+          </div>
+
+          {/* Local Vault/Directory Path */}
+          <div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.88rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 500 }}>
+              <FolderOpen size={14} />
+              <span>本地目录绝对路径 (可选，支持 Obsidian/Typora/VSCode 工作区)</span>
+            </label>
+            <input
+              type="text"
+              value={obsidianVaultPath}
+              onChange={(e) => setObsidianVaultPath(e.target.value)}
+              placeholder="例如: D:/MyKnowledgeBase (留空则不启用同步)"
+              className="input-glass"
+              style={{
+                width: '100%',
+                padding: '0.6rem 0.75rem',
+                fontSize: '0.92rem',
+                background: '#0f172a',
+                border: '1px solid var(--panel-border)',
+                borderRadius: '8px',
+                color: 'white',
+                outline: 'none',
+                boxSizing: 'border-box'
+              }}
+            />
           </div>
 
           <div style={{ borderTop: '1px solid var(--panel-border)', margin: '0.5rem 0' }} />

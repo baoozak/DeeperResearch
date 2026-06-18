@@ -10,3 +10,4 @@ python-dotenv
 ddgs
 markitdown[all]
 python-multipart
+langchain-mcp-adapters

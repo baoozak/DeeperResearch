@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .agent.graph import research_graph, execute_graph
-from .agent.nodes import triage_node, orchestrator_node, _make_event, _get_llm, PlanOutput
+from .agent.nodes import triage_node, orchestrator_node, _make_event, _get_llm, PlanOutput, _parse_structured_json
 from .agent.prompts import (
     ORCHESTRATOR_SYSTEM,
     ORCHESTRATOR_USER_INITIAL,
@@ -57,6 +57,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from fastapi.staticfiles import StaticFiles
+import os
+os.makedirs("backend/static/charts", exist_ok=True)
+app.mount("/static", StaticFiles(directory="backend/static"), name="static")
 
 
 # ============================================================================
@@ -523,10 +528,13 @@ async def plan_research(request: PlanRequest):
                     HumanMessage(content=user_prompt),
                 ])
                 try:
-                    data = json.loads(response.content)
+                    data = _parse_structured_json(response.content)
                     sub_tasks = data.get("sub_tasks", [])[:max_sub]
                     reasoning = data.get("reasoning", "")
-                except json.JSONDecodeError:
+                    if not isinstance(sub_tasks, list) or not sub_tasks:
+                        raise ValueError("Parsed sub_tasks is empty or not a list")
+                except Exception as ex:
+                    logger.warning(f"结构化文本解析失败: {ex}，降级为行拆分解析")
                     sub_tasks = [
                         line.strip().lstrip("0123456789.-) ")
                         for line in response.content.split("\n")
@@ -648,6 +656,146 @@ async def execute_research(request: ExecuteRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ============================================================================
+# Obsidian 本地归档端点 (使用 npx 启动官方 @modelcontextprotocol/server-filesystem MCP)
+# ============================================================================
+class ArchiveRequest(BaseModel):
+    obsidian_vault_path: str = Field(..., description="Obsidian 库绝对路径")
+    topic: str = Field(..., description="研究课题名")
+    draft: str = Field(..., description="报告 Markdown 内容")
+
+@app.post("/api/research/archive")
+async def archive_to_obsidian(request: ArchiveRequest):
+    """
+    一键将报告同步到用户的 Obsidian 库中：
+    1. 通过 npx 启动官方 @modelcontextprotocol/server-filesystem MCP
+    2. 对报告内的 Base64 图片进行提取、解码并转存至 Obsidian attachments/ 目录中
+    3. 将原 Base64 图片引用转换为 Obsidian 的本地相对路径语法
+    4. 调用 MCP 工具将最终 Markdown 报告写入 DeeperResearch 文件夹下
+    """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+    import base64
+    import re
+    import hashlib
+    import os
+    import asyncio
+    
+    vault_path = request.obsidian_vault_path.strip()
+    if not vault_path:
+        raise HTTPException(status_code=400, detail="Obsidian 库路径不能为空")
+    
+    # 清理路径，将 windows 反斜杠统一转换为正斜杠
+    vault_path = vault_path.replace("\\", "/")
+    
+    # 1. 初始化并连接本地 MCP (通过 npx 后台 stdio 通道)
+    logger.info(f"📂 [MCP 归档] 正在通过 npx 启动 filesystem MCP, 路径: {vault_path}")
+    mcp_client = MultiServerMCPClient({
+        "obsidian_vault": {
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", vault_path]
+        }
+    })
+    
+    try:
+        # 获取 MCP 暴露出的标准文件操作工具
+        tools = await mcp_client.get_tools()
+        
+        # 寻找 write_file 工具
+        write_file_tool = next((t for t in tools if "write_file" in t.name), None)
+        if not write_file_tool:
+            raise Exception("未能从 @modelcontextprotocol/server-filesystem 检索到 write_file 工具")
+            
+        # 2. 图像资产提取与转换为相对路径
+        content = request.draft
+        
+        # 查找所有形如 `data:image/png;base64,...` 的图片数据
+        # 匹配模式: ![描述](data:image/png;base64,编码内容)
+        img_pattern = r'!\[([^\]]*)\]\(data:image/([a-zA-Z]+);base64,([a-zA-Z0-9\+/=\s]+)\)'
+        
+        for match in re.finditer(img_pattern, content):
+            alt_text = match.group(1) or "chart"
+            ext = match.group(2) or "png"
+            b64_data = match.group(3).strip()
+            
+            try:
+                # 字节解码
+                img_bytes = base64.b64decode(b64_data)
+                
+                # 基于内容 MD5 作为唯一文件名，防止重复拷贝
+                md5_hash = hashlib.md5(img_bytes).hexdigest()
+                filename = f"chart_{md5_hash}.{ext}"
+                
+                # 安全物理写入到 Obsidian attachments
+                attachments_dir = os.path.join(vault_path, "attachments")
+                os.makedirs(attachments_dir, exist_ok=True)
+                dest_path = os.path.join(attachments_dir, filename)
+                
+                with open(dest_path, "wb") as f:
+                    f.write(img_bytes)
+                
+                # 替换链接为 Obsidian 的本地相对路径，如 `./attachments/filename.png`
+                old_ref = match.group(0)
+                new_ref = f"![{alt_text}](./attachments/{filename})"
+                content = content.replace(old_ref, new_ref)
+                
+                logger.info(f"💾 [MCP 归档] 成功解码并拷贝图表: attachments/{filename}")
+                
+            except Exception as e_img:
+                logger.warning(f"⚠️ 提取图片 Base64 失败: {e_img}")
+                
+        # 3. 使用 MCP 工具写盘 Markdown 研报
+        # 确保 DeeperResearch 归档目录存在
+        target_dir = os.path.abspath(os.path.join(vault_path, "DeeperResearch"))
+        os.makedirs(target_dir, exist_ok=True)
+        
+        # 规避文件名中的非法字符
+        safe_topic = re.sub(r'[\/\\\:\*\?\"\<\>\|]', '_', request.topic)
+        
+        # 生成绝对路径并防御路径穿越
+        archive_file_path = os.path.abspath(os.path.join(target_dir, f"{safe_topic}.md"))
+        
+        # 路径规范化校验，确保不会穿透到 target_dir 之外
+        target_dir_str = target_dir.replace("\\", "/")
+        archive_file_path_str = archive_file_path.replace("\\", "/")
+        if not archive_file_path_str.startswith(target_dir_str):
+            raise HTTPException(status_code=400, detail="非法的归档路径：检测到潜在的路径穿越尝试")
+            
+        logger.info(f"💾 [MCP 归档] 正在调用 MCP write_file 写入绝对路径: {archive_file_path_str}")
+        res = await write_file_tool.ainvoke({
+            "path": archive_file_path_str,
+            "content": content
+        })
+        
+        # 解析 MCP 返回值，强校验是否发生权限拒绝或写入错误
+        if isinstance(res, list) and len(res) > 0:
+            res_text = res[0].get("text", "")
+            if "Access denied" in res_text or "error" in res_text.lower():
+                raise Exception(f"MCP 服务端拒绝写入: {res_text}")
+            elif "Successfully wrote" not in res_text:
+                logger.warning(f"MCP write_file 提示未知结果: {res_text}")
+        
+        logger.info(f"🎉 [MCP 归档] 归档完成: {archive_file_path_str}")
+        return {"status": "success", "file_path": archive_file_path_str}
+        
+    except Exception as e:
+        logger.error(f"❌ [MCP 归档] 异常: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Obsidian 归档失败: {str(e)}")
+        
+    finally:
+        # 释放 MCP 管道资源，防止僵尸 Node.js 进程堆积
+        try:
+            if hasattr(mcp_client, "aclose"):
+                await mcp_client.aclose()
+            elif hasattr(mcp_client, "close"):
+                if asyncio.iscoroutinefunction(mcp_client.close):
+                    await mcp_client.close()
+                else:
+                    mcp_client.close()
+        except Exception as e_close:
+            logger.warning(f"⚠️ 关闭 MCP 客户端资源失败: {e_close}")
 
 
 # ============================================================================

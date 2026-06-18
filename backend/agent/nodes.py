@@ -63,6 +63,8 @@ def _get_llm() -> ChatOpenAI:
         temperature=settings.temperature,
         api_key=api_key,
         base_url=base_url,
+        timeout=300,  # 增加 5 分钟超时，确保长研报顺利生成完成
+        max_retries=0,  # 超时直接断开并不进行二次重试，防止浪费重复等待时间
     )
 
 
@@ -91,6 +93,37 @@ class SearchReviewOutput(BaseModel):
     verdict: str = Field(description="审查结论: PASS 或 FAIL")
     reason: str = Field(description="一句话判定理由")
     refined_query: str = Field(default="", description="如果 FAIL，优化后的搜索关键词")
+
+
+def _parse_structured_json(content: str) -> dict:
+    """
+    稳健的结构化 JSON 提取器。
+    支持 ```json ... ``` 块包裹、``` ... ``` 包裹、以及直接定位第一个 '{' 和最后一个 '}' 匹配块。
+    """
+    content = content.strip()
+    if "```json" in content:
+        try:
+            content_part = content.split("```json", 1)[1].split("```", 1)[0].strip()
+            return json.loads(content_part)
+        except Exception:
+            pass
+    elif "```" in content:
+        try:
+            content_part = content.split("```", 1)[1].split("```", 1)[0].strip()
+            return json.loads(content_part)
+        except Exception:
+            pass
+            
+    # 尝试寻找首个 { 和最末个 } 匹配包裹
+    start_idx = content.find("{")
+    end_idx = content.rfind("}")
+    if start_idx != -1 and end_idx != -1:
+        try:
+            return json.loads(content[start_idx:end_idx + 1])
+        except Exception:
+            pass
+            
+    return json.loads(content)
 
 
 # ============================================================================
@@ -208,10 +241,13 @@ async def orchestrator_node(state: ResearchState) -> dict[str, Any]:
             HumanMessage(content=user_prompt),
         ])
         try:
-            data = json.loads(response.content)
+            data = _parse_structured_json(response.content)
             sub_tasks = data.get("sub_tasks", [])[:max_sub]
             reasoning = data.get("reasoning", "")
-        except json.JSONDecodeError:
+            if not isinstance(sub_tasks, list) or not sub_tasks:
+                raise ValueError("Parsed sub_tasks is empty or not a list")
+        except Exception as ex:
+            logger.warning(f"结构化文本解析失败: {ex}，降级为行拆分解析")
             sub_tasks = [
                 line.strip().lstrip("0123456789.-) ")
                 for line in response.content.split("\n")
@@ -359,17 +395,13 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                             summary=summary,
                         ) + tombstones_review_prompt),
                     ])
-                    content = review_response.content.strip()
-                    if content.startswith("```json"):
-                        content = content.split("```json")[1].split("```")[0].strip()
-                    elif content.startswith("```"):
-                        content = content.split("```")[1].split("```")[0].strip()
-                    data = json.loads(content)
+                    data = _parse_structured_json(review_response.content)
                     verdict = data.get("verdict", "PASS").upper()
                     reason = data.get("reason", "")
                     refined_query = data.get("refined_query", "")
                 except Exception as ex:
-                    logger.warning(f"最终解析失败: {ex}, 原文: {review_response.content}")
+                    raw_content = review_response.content if 'review_response' in locals() else "无"
+                    logger.warning(f"终极审查解析失败: {ex}, 原文: {raw_content}")
                     verdict = "PASS"  # 审查失败时默认通过
                     reason = "审查解析失败，默认通过"
                     refined_query = ""
@@ -387,9 +419,11 @@ async def search_worker_node(state: SearchWorkerInput) -> dict[str, Any]:
                 })
                 current_query = refined_query if refined_query else f"{sub_task} 最新数据"
                 logger.info(f"🔄 Search Agent 审查不通过，重搜 (第 {attempt + 2} 次): {current_query}")
+                # 清洗理由末尾多余的句号，解决双句号连击问题
+                clean_reason = reason.rstrip("。").rstrip(".")
                 all_events.append(_make_event(
                     "searching",
-                    f"质量审查 [FAIL]: {reason}。已建立认知墓碑 🪦 避障，尝试第 {attempt + 2} 次重搜，关键词: {current_query}"
+                    f"质量审查 [FAIL]: {clean_reason}。已建立认知墓碑 🪦 避障，尝试第 {attempt + 2} 次重搜，关键词: {current_query}"
                 ))
                 continue
 
@@ -460,19 +494,34 @@ async def synthesizer_node(state: ResearchState) -> dict[str, Any]:
     if uploaded_context:
         uploaded_block = f"\n## 用户上传的参考材料:\n{uploaded_context}\n\n请在报告中充分参考和引用以上用户提供的材料内容。\n"
 
+    messages = [
+        SystemMessage(content=SYNTHESIZER_SYSTEM),
+        HumanMessage(content=SYNTHESIZER_USER.format(
+            topic=topic,
+            content_blocks=content_blocks,
+            requirements_block=requirements_block,
+        ) + uploaded_block),
+    ]
+
     try:
-        response = await llm.ainvoke([
-            SystemMessage(content=SYNTHESIZER_SYSTEM),
-            HumanMessage(content=SYNTHESIZER_USER.format(
-                topic=topic,
-                content_blocks=content_blocks,
-                requirements_block=requirements_block,
-            ) + uploaded_block),
-        ])
+        logger.info("📝 Synthesizer 模型调用...")
+        response = await llm.ainvoke(messages)
         draft = response.content
+        
+        # 对大模型可能生成的带语法瑕疵的 Mermaid 图表进行后端自动纠错清洗，防止前端渲染报错
+        try:
+            logger.info("🛠️ 正在检查并自动修复研报中的 Mermaid 图表语法...")
+            draft = repair_all_mermaids_in_text(draft)
+            logger.info("✅ Mermaid 图表语法自动修复完成！")
+        except Exception as ex_m:
+            logger.error(f"⚠️ Mermaid 语法自动修复抛出异常 (已忽略): {ex_m}")
+                
     except Exception as e:
         logger.error(f"❌ 报告撰写失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         draft = f"# {topic}\n\n> ⚠️ 报告生成过程中发生错误: {str(e)}\n\n## 原始调研资料\n\n{content_blocks}"
+
 
     logger.info(f"📝 Synthesizer 完成: 报告长度 {len(draft)} 字符")
 
@@ -483,3 +532,145 @@ async def synthesizer_node(state: ResearchState) -> dict[str, Any]:
             _make_event("synthesizing", f"报告撰写完成 (长度: {len(draft)} 字符)"),
         ],
     }
+
+
+def repair_mermaid(mermaid_code: str) -> str:
+    """
+    对大模型生成的 Mermaid 图表代码进行自动语法修复。
+    解决最常见的几种 Mermaid 语法崩溃问题：
+    1. 连线两端的节点 ID 包含空格或特殊字符 (例如: Claude Fable 5 --> Opus 4.8)。
+    2. 节点内的文本包含特殊符号 (如冒号、问号、括号、斜杠等) 且未被双引号包裹。
+    3. 连线箭头写错 (如 -> 代替 -->，或 => 代替 ==>)。
+    """
+    import re
+    lines = mermaid_code.split("\n")
+    cleaned_lines = []
+    
+    # 已声明/已处理的合规节点ID集合
+    declared_ids = set()
+    
+    def sanitize_id(raw_id: str) -> str:
+        raw_id = raw_id.strip()
+        if not raw_id:
+            return ""
+        # 移除任何可能误加的引号
+        clean = re.sub(r'[^a-zA-Z0-9_\u4e00-\u9fff-]', '_', raw_id)
+        clean = re.sub(r'_+', '_', clean).strip('_')
+        return clean if clean else "node"
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or any(stripped.startswith(x) for x in ["graph ", "flowchart ", "subgraph ", "end ", "%%"]):
+            if stripped in ["graph TD", "graph LR", "flowchart TD", "flowchart LR"]:
+                cleaned_lines.append(stripped)
+            else:
+                cleaned_lines.append(line)
+            continue
+            
+        # 1. 临时保护连线上的描述文字，形如 -->|文字|
+        labels = []
+        def label_repl(match):
+            labels.append(match.group(0))
+            return f"__LABEL_HOLDER_{len(labels)-1}__"
+        
+        temp_line = re.sub(r'\|[^|]+\|', label_repl, stripped)
+        
+        # 保护 -- 文字 --> 这种形式，统一转换为 -->__LABEL_HOLDER_X__
+        def edge_repl(match):
+            text = match.group(1)
+            labels.append(f"|{text}|")
+            return f"-->__LABEL_HOLDER_{len(labels)-1}__"
+        temp_line = re.sub(r'--\s*([^-<>]+?)\s*-->', edge_repl, temp_line)
+
+        # 2. 规范化其他的连接符
+        temp_line = re.sub(r'(?<!-)->(?!>)', '-->', temp_line)
+        temp_line = re.sub(r'(?<!=)=>(?!>)', '==>', temp_line)
+
+        # 3. 按照连接符号拆分
+        connection_pattern = r'(\-\-\>__LABEL_HOLDER_\d+__|==\>__LABEL_HOLDER_\d+__|\-\.\-\>__LABEL_HOLDER_\d+__|\-\-\>|==\>|\-\.\-\>)'
+        parts = re.split(connection_pattern, temp_line)
+        
+        new_parts = []
+        for i, part in enumerate(parts):
+            part_strip = part.strip()
+            if i % 2 == 0:  # 节点部分
+                if not part_strip:
+                    new_parts.append(part)
+                    continue
+                
+                # 寻找括号描述，形如 A[文字] 或 A((文字)) 等，支持多重嵌套括号与内部小括号
+                first_bracket = -1
+                bracket_type = ""
+                for b in ['((', '([', '[[', '[(', '[', '(', '{', '{{']:
+                    idx = part_strip.find(b)
+                    if idx != -1 and (first_bracket == -1 or idx < first_bracket):
+                        first_bracket = idx
+                        bracket_type = b
+                
+                if first_bracket != -1:
+                    node_id = part_strip[:first_bracket].strip()
+                    clean_id = sanitize_id(node_id)
+                    closing_map = {
+                        '((': '))',
+                        '([': '])',
+                        '[[': ']]',
+                        '[(': ')]',
+                        '[': ']',
+                        '(': ')',
+                        '{': '}',
+                        '{{': '}}'
+                    }
+                    close_bracket = closing_map[bracket_type]
+                    content_start = first_bracket + len(bracket_type)
+                    content_end = part_strip.rfind(close_bracket)
+                    
+                    if content_end != -1:
+                        node_text = part_strip[content_start:content_end].strip()
+                        if not (node_text.startswith('"') and node_text.endswith('"')):
+                            node_text = node_text.replace('"', '\\"')
+                            node_text = f'"{node_text}"'
+                        new_parts.append(f'{clean_id}{bracket_type}{node_text}{close_bracket}')
+                        declared_ids.add(clean_id)
+                    else:
+                        new_parts.append(part_strip)
+                else:
+                    # 纯节点 ID，可能包含空格或特殊字符
+                    if not part_strip.isalnum() and part_strip not in declared_ids:
+                        clean_id = sanitize_id(part_strip)
+                        if clean_id not in declared_ids:
+                            # 回填 label 占位符供展示
+                            display_text = part_strip
+                            for l_idx, lbl in enumerate(labels):
+                                display_text = display_text.replace(f"__LABEL_HOLDER_{l_idx}__", lbl)
+                            new_parts.append(f'{clean_id}["{display_text}"]')
+                            declared_ids.add(clean_id)
+                        else:
+                            new_parts.append(clean_id)
+                    else:
+                        new_parts.append(sanitize_id(part_strip))
+            else:  # 连线符号部分，回填 label
+                connection = part_strip
+                for l_idx, lbl in enumerate(labels):
+                    connection = connection.replace(f"__LABEL_HOLDER_{l_idx}__", lbl)
+                new_parts.append(connection)
+                
+        # 还原缩进，默认加 4 空格
+        leading_spaces = len(line) - len(line.lstrip())
+        indent = " " * leading_spaces if leading_spaces > 0 else "    "
+        cleaned_lines.append(indent + "".join(new_parts))
+                
+    return "\n".join(cleaned_lines)
+
+
+def repair_all_mermaids_in_text(text: str) -> str:
+    """
+    抓取文本中所有的 ```mermaid 代码块，并进行语法修复
+    """
+    import re
+    def repl(match):
+        code = match.group(1)
+        repaired = repair_mermaid(code)
+        return f"```mermaid\n{repaired}\n```"
+        
+    return re.sub(r'```mermaid(.*?)```', repl, text, flags=re.DOTALL)
+

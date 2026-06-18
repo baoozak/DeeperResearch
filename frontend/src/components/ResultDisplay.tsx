@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { FileText, Download, ChevronDown, ChevronUp, Globe } from 'lucide-react';
+import { FileText, Download, ChevronDown, ChevronUp, Globe, RefreshCw, Check, X, FolderSync } from 'lucide-react';
 import mermaid from 'mermaid';
 import React, { useEffect, useRef, useState } from 'react';
 
@@ -177,7 +177,20 @@ const Mermaid = ({ chart }: { chart: string }) => {
   }, [chart]);
 
   return (
-    <div className="mermaid-graph-wrapper" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '1.5rem 0', overflowX: 'auto', width: '100%', background: 'transparent' }}>
+    <div className="mermaid-graph-wrapper" style={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      alignItems: 'center', 
+      margin: '1.5rem auto', 
+      overflowX: 'auto', 
+      width: '100%', 
+      maxWidth: '720px', 
+      background: 'rgba(255, 255, 255, 0.015)', 
+      border: '1px solid rgba(255, 255, 255, 0.06)',
+      borderRadius: '8px',
+      padding: '1.25rem',
+      boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)'
+    }}>
       {/* 第二层防御：CSS !important 兜底（处理动态添加的元素） */}
       <style>{`
         pre:has(.mermaid-graph-wrapper),
@@ -252,8 +265,43 @@ function cleanMarkdown(raw: string): string {
 
 export function ResultDisplay({ draft, topic, events, liveSources, phase }: ResultDisplayProps) {
   const [showThinking, setShowThinking] = useState(true);
+  const [obsidianVaultPath, setObsidianVaultPath] = useState<string>('');
+  const [toast, setToast] = useState<{ type: 'loading' | 'success' | 'error'; message: string } | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+
   // 清理后的报告内容
   const cleanedDraft = draft ? cleanMarkdown(draft) : '';
+
+  // 从 LocalStorage 加载库路径
+  const loadObsidianPath = () => {
+    try {
+      const saved = localStorage.getItem('deeper_research_settings');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setObsidianVaultPath(parsed.obsidian_vault_path || '');
+      } else {
+        setObsidianVaultPath('');
+      }
+    } catch (e) {
+      console.error("加载 Obsidian 路径失败:", e);
+    }
+  };
+
+  useEffect(() => {
+    loadObsidianPath();
+
+    const handleSettingsChanged = () => {
+      loadObsidianPath();
+    };
+
+    window.addEventListener('deeper_research_settings_changed', handleSettingsChanged);
+    window.addEventListener('storage', handleSettingsChanged);
+
+    return () => {
+      window.removeEventListener('deeper_research_settings_changed', handleSettingsChanged);
+      window.removeEventListener('storage', handleSettingsChanged);
+    };
+  }, []);
 
   // 当报告生成完毕时，自动折叠思考过程；如果重新开始研究，则自动展开
   useEffect(() => {
@@ -293,8 +341,90 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
     URL.revokeObjectURL(url);
   };
 
+  const handleSyncToObsidian = async () => {
+    if (!cleanedDraft || !obsidianVaultPath || isSyncing) return;
+
+    setIsSyncing(true);
+    setToast({ type: 'loading', message: '正在通过 MCP 写入本地目录...' });
+
+    try {
+      const response = await fetch('http://localhost:8000/api/research/archive', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          obsidian_vault_path: obsidianVaultPath,
+          topic: topic || '未命名研究报告',
+          draft: cleanedDraft,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: '未知请求错误' }));
+        throw new Error(errorData.detail || `HTTP 错误 ${response.status}`);
+      }
+
+      const data = await response.json();
+      setToast({ type: 'success', message: '已成功归档到本地 DeeperResearch 目录！' });
+
+      setTimeout(() => {
+        setToast(null);
+      }, 3500);
+    } catch (error: any) {
+      console.error("同步失败:", error);
+      setToast({ type: 'error', message: `归档失败: ${error.message || '网络或服务器异常'}` });
+      setTimeout(() => {
+        setToast(null);
+      }, 4000);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   return (
-    <div className="glass-panel" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <div className="glass-panel" style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+      {/* 全局自定义动画与图表自适应样式注入 */}
+      <style>{`
+        @keyframes spin-custom {
+          to { transform: rotate(360deg); }
+        }
+        .animate-spin-custom {
+          animation: spin-custom 1s linear infinite;
+        }
+        @keyframes toastSlideIn {
+          from {
+            transform: translateY(-20px) scale(0.95);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0) scale(1);
+            opacity: 1;
+          }
+        }
+        .toast-slide-in {
+          animation: toastSlideIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+        }
+        
+        /* 强力自适应与最大宽度限制，防止小图被过度拉伸 */
+        svg[id^="mermaid-"] {
+          max-width: min(100%, 650px) !important;
+          height: auto !important;
+          margin: 0 auto;
+        }
+        .markdown-body img {
+          max-width: 100% !important;
+          height: auto !important;
+          border-radius: 8px;
+          border: 1px solid var(--panel-border);
+          margin: 1.25rem 0;
+        }
+        .markdown-body pre {
+          max-width: 100% !important;
+          overflow-x: auto !important;
+        }
+      `}</style>
+
       {/* Header */}
       <div style={{ 
         padding: '1.5rem', 
@@ -305,6 +435,46 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
       }}>
         <h2 style={{ fontSize: '1.5rem', margin: 0, color: 'white' }}>{topic || '研究报告草稿'}</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          {/* 同步到本地目录按钮 */}
+          {cleanedDraft && obsidianVaultPath && (
+            <button 
+              onClick={handleSyncToObsidian}
+              disabled={isSyncing}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                background: isSyncing ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.05)',
+                border: isSyncing ? '1px solid var(--primary)' : '1px solid var(--panel-border)',
+                color: isSyncing ? 'var(--primary)' : 'var(--text-main)',
+                padding: '0.4rem 0.8rem',
+                borderRadius: '6px',
+                fontSize: '0.85rem',
+                cursor: isSyncing ? 'not-allowed' : 'pointer',
+                transition: 'all 0.2s',
+                opacity: isSyncing ? 0.8 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (!isSyncing) {
+                  e.currentTarget.style.borderColor = 'var(--primary)';
+                  e.currentTarget.style.background = 'rgba(99, 102, 241, 0.08)';
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isSyncing) {
+                  e.currentTarget.style.borderColor = 'var(--panel-border)';
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
+                  e.currentTarget.style.transform = 'translateY(0)';
+                }
+              }}
+              title="同步到本地目录 (如 Obsidian/Typora)"
+            >
+              <FolderSync size={16} className={isSyncing ? 'animate-spin-custom' : ''} />
+              <span>{isSyncing ? '正在归档...' : '一键归档到目录'}</span>
+            </button>
+          )}
+
           {cleanedDraft && (
             <button 
               onClick={handleDownload}
@@ -319,10 +489,16 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
                 borderRadius: '6px',
                 fontSize: '0.85rem',
                 cursor: 'pointer',
-                transition: 'border-color 0.2s',
+                transition: 'border-color 0.2s, transform 0.2s',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--primary)')}
-              onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--panel-border)')}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderColor = 'var(--primary)';
+                e.currentTarget.style.transform = 'translateY(-1px)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderColor = 'var(--panel-border)';
+                e.currentTarget.style.transform = 'translateY(0)';
+              }}
               title="下载为 Markdown 文件"
             >
               <Download size={16} />
@@ -353,7 +529,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
                   <div key={idx} style={{ position: 'relative' }}>
                     <div style={{ position: 'absolute', left: '-1.89rem', top: '0.5rem', width: '11px', height: '11px', borderRadius: '50%', background: 'var(--bg-panel)', border: '2px solid var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center' }} />
                     <p style={{ margin: 0, fontSize: '0.95rem', color: 'var(--text-muted)', fontStyle: 'italic', lineHeight: '1.6' }}>
-                      {evt.message}
+                       {evt.message}
                     </p>
                   </div>
                 ))}
@@ -459,6 +635,39 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
         )}
       </div>
 
+      {/* 浮动精致 Toast */}
+      {toast && (
+        <div 
+          className="toast-slide-in"
+          style={{
+            position: 'absolute',
+            top: '1.5rem',
+            right: '1.5rem',
+            background: 'rgba(15, 23, 42, 0.85)',
+            backdropFilter: 'blur(12px)',
+            WebkitBackdropFilter: 'blur(12px)',
+            border: toast.type === 'success' 
+              ? '1px solid rgba(34, 197, 94, 0.4)' 
+              : toast.type === 'error' 
+                ? '1px solid rgba(239, 68, 68, 0.4)' 
+                : '1px solid rgba(99, 102, 241, 0.4)',
+            padding: '0.75rem 1.25rem',
+            borderRadius: '8px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.5)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.6rem',
+            color: '#f8fafc',
+            fontSize: '0.9rem',
+          }}
+        >
+          {toast.type === 'loading' && <RefreshCw size={16} className="animate-spin-custom" style={{ color: 'var(--primary)' }} />}
+          {toast.type === 'success' && <Check size={16} style={{ color: '#22c55e' }} />}
+          {toast.type === 'error' && <X size={16} style={{ color: '#ef4444' }} />}
+          <span>{toast.message}</span>
+        </div>
+      )}
     </div>
   );
 }

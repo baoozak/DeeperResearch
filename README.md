@@ -16,6 +16,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **🎯 用户自定义要求**：支持在输入研究主题时额外填写详细要求（如“重点分析技术架构”“用学术论文风格”等），要求会同时注入规划师和撰稿人，影响子任务拆解方向和报告写作风格。
 - **📄 多格式文件上传**：集成 [MarkItDown](https://github.com/microsoft/markitdown)，支持上传 PDF / Word / Excel / PPT / Markdown 等多种格式文件作为参考材料，自动转换为 Markdown 注入研究流程，辅助规划师拆解子任务和撰稿人生成报告。
 - **💾 轻量级持久化**：报告生成完成后自动缓存至浏览器 localStorage，防止误触刷新丢失。同时支持一键导出为 Markdown 文件。
+- **📂 本地知识库一键同步归档 (基于 Filesystem MCP)**：支持一键将生成的 Markdown 报告同步到本地任意指定的文件夹目录（如 Obsidian 库、Typora 或 VS Code 本地工作区等）。
 
 ## 📸 界面展示
 ![调研方案专家级审批与编辑](screenshots/plan_review.png)
@@ -31,6 +32,7 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
 - **前端可视化**：`React 18`, `TypeScript`, `Vite`, `React-Markdown`, `Mermaid.js`
 - **搜索服务**：`AnySearch API` 统一检索引擎 (国内/国际免代理直连双通道)
 - **文件解析**：微软 `MarkItDown` (多格式文件转 Markdown)
+- **本地文件系统归档**：官方 `@modelcontextprotocol/server-filesystem` (基于 stdio 的 MCP 服务，用于直连写入本地指定的文件夹目录)
 
 ## 📂 核心目录结构
 
@@ -43,7 +45,7 @@ DeeperResearch/
 │   │   ├── prompts.py        # Master 级系统提示词库 (含重规划模板)
 │   │   ├── state.py          # 跨节点全局记忆与状态维持机制
 │   │   └── tools.py          # AnySearch 统一搜索入口 (国内/国际免代理直连)
-│   ├── main.py               # SSE 服务端 (/plan + /execute + /upload 多端点)
+│   ├── main.py               # SSE 服务端 (/plan + /execute + /archive + /upload 多端点)
 │   └── config.py             # 全局环境依赖配置项
 ├── frontend/                 # 🔭 可视化交互前端
 │   ├── src/

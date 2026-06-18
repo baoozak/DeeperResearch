@@ -90,7 +90,9 @@ def _get_search_client() -> AsyncOpenAI:
 
 async def _call_anysearch_api(
     query: str,
-    max_results: int = 5
+    max_results: int = 5,
+    zone: Optional[str] = None,
+    language: Optional[str] = None
 ) -> list[SearchResult]:
     """
     底层调用 AnySearch API 进行检索并返回 SearchResult 列表。
@@ -109,9 +111,13 @@ async def _call_anysearch_api(
         "query": query,
         "max_results": max_results
     }
+    if zone:
+        payload["zone"] = zone
+    if language:
+        payload["language"] = language
 
     try:
-        logger.info(f"🌐 [AnySearch] 发起检索: {query[:60]}...")
+        logger.info(f"🌐 [AnySearch] 发起检索: {query[:60]}... (zone={zone}, lang={language})")
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post("https://api.anysearch.com/v1/search", json=payload, headers=headers)
             if response.status_code == 200:
@@ -147,22 +153,43 @@ async def _translate_keywords_to_english(keywords: str) -> str:
         return keywords
 
     try:
+        from ..config import temp_model
         settings = get_settings()
         client = _get_search_client()
+        model_name = temp_model.get() or settings.model_name
         response = await client.chat.completions.create(
-            model=settings.model_name,
+            model=model_name,
             messages=[
-                {"role": "system", "content": "You are a search keyword translator. Translate the given Chinese search keywords into concise English search keywords. Output ONLY the English keywords, nothing else. Keep technical terms, product names, and proper nouns as-is."},
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert search keyword translator. Your only task is to translate Chinese search queries or keywords into concise, effective English search keywords for search engines. "
+                        "All Chinese words must be translated into English. Proper nouns (like product names, brand names, e.g., 'Claude', 'Fable') should be kept in English. "
+                        "Do not explain, do not add conversational text, do not repeat the Chinese characters. Output ONLY the English search keywords.\n\n"
+                        "Examples:\n"
+                        "Input: 'claude fable 5有哪些重大升级'\n"
+                        "Output: 'Claude Fable 5 key upgrades major improvements new features'\n"
+                        "Input: 'Claude Fable 5 上下文窗口和最大输出长度升级细节'\n"
+                        "Output: 'Claude Fable 5 context window max output length upgrade details'\n"
+                        "Input: 'Claude Fable 5 视觉能力改进与新功能'\n"
+                        "Output: 'Claude Fable 5 vision capabilities improvements new features'\n"
+                        "Input: 'Claude Fable 5 安全路由和多云部署变化'\n"
+                        "Output: 'Claude Fable 5 secure routing multi-cloud deployment changes'"
+                    )
+                },
                 {"role": "user", "content": keywords},
             ],
             temperature=0.1,
             max_tokens=100,
         )
         en = (response.choices[0].message.content or "").strip()
+        # 剥离可能生成的引号
+        en = en.strip('\'"')
         return en if en else keywords
     except Exception as e:
         logger.warning(f"⚠️ 关键词翻译失败，使用原始关键词: {e}")
         return keywords
+
 
 
 async def _web_search_unified(
@@ -178,13 +205,21 @@ async def _web_search_unified(
     settings = get_settings()
     actual_keywords = search_keywords or query
 
+    # 确定 AnySearch 的 zone 与 language 参数
+    if region == "cn":
+        zone = "cn"
+        language = "zh-CN"
+    else:
+        zone = "intl"
+        language = "en"
+
     # 如果是国际搜索，则进行英文翻译
     if region == "wt-wt":
         actual_keywords = await _translate_keywords_to_english(actual_keywords)
         logger.info(f"🔍 [AnySearch] 国际检索关键词转换: {query[:50]} -> 英文: {actual_keywords[:50]}")
 
     # Step 1: 调用 AnySearch 获取网页检索结果
-    sources = await _call_anysearch_api(actual_keywords, max_results=max_results)
+    sources = await _call_anysearch_api(actual_keywords, max_results=max_results, zone=zone, language=language)
     if not sources:
         logger.warning(f"⚠️ [AnySearch] 检索无结果: {actual_keywords}")
         return "", []
@@ -283,6 +318,7 @@ async def web_search(
             max_results=max_results,
             region="cn"
         )
+
 
 
 # 别名兼容，避免其他文件调用报错

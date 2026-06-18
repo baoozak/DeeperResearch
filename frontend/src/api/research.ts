@@ -100,6 +100,7 @@ function _streamSSE(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let currentEventStr = '';
 
     while (true) {
       const { value, done } = await reader.read();
@@ -113,7 +114,6 @@ function _streamSSE(
       let lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
-      let currentEventStr = '';
       for (const line of lines) {
         if (line.startsWith('event:')) {
           currentEventStr = line.substring(6).trim();
