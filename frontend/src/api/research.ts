@@ -1,16 +1,33 @@
 // API types and SSE handler
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+export interface SourceRecord {
+  title: string;
+  url: string;
+  snippet: string;
+  evidence?: string;
+  rank?: number | null;
+  retrieved_at?: string;
+  verified?: boolean;
+  source_kind?: string;
+}
+
 export interface ResearchResponse {
   topic: string;
   draft: string;
-  sources: Array<{title: string, url: string, snippet: string}>;
-  revision_count: number;
+  sources: SourceRecord[];
   phase_events: Array<{timestamp: string, phase: string, message: string}>;
 }
 
-export interface StreamEvent {
-  type: 'phase' | 'event' | 'sub_tasks' | 'search_result' | 'result' | 'error' | 'plan_ready' | 'new_source';
-  data: any;
-}
+export type StreamEvent =
+  | { type: 'phase'; data: { phase: string; message?: string; node?: string; research_id?: string } }
+  | { type: 'event'; data: { timestamp: string; phase: string; message: string } }
+  | { type: 'sub_tasks'; data: { sub_tasks: string[] } }
+  | { type: 'search_result'; data: { sub_task: string; source_count: number } }
+  | { type: 'result'; data: { topic: string; draft: string; sources: SourceRecord[] } }
+  | { type: 'error'; data: { message: string } }
+  | { type: 'plan_ready'; data: { research_id: string; sub_tasks: string[]; triage_context?: string; reasoning?: string } }
+  | { type: 'new_source'; data: SourceRecord };
 
 export interface UploadResult {
   filename: string;
@@ -52,7 +69,7 @@ export async function uploadFile(file: File): Promise<UploadResult> {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch('http://localhost:8000/api/upload', {
+  const response = await fetch(`${API_BASE_URL}/api/upload`, {
     method: 'POST',
     headers: _buildConfigHeaders(), // 透传 API Key，供可能用到的多模态处理
     body: formData,
@@ -71,7 +88,7 @@ export async function uploadFile(file: File): Promise<UploadResult> {
  */
 function _streamSSE(
   url: string,
-  body: Record<string, any>,
+  body: Record<string, unknown>,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
@@ -121,8 +138,8 @@ function _streamSSE(
           const dataStr = line.substring(5).trim();
           if (dataStr) {
             try {
-              const data = JSON.parse(dataStr);
-              onEvent({ type: currentEventStr as any, data });
+              const data: unknown = JSON.parse(dataStr);
+              onEvent({ type: currentEventStr as StreamEvent['type'], data } as StreamEvent);
             } catch (e) {
               console.error("Failed to parse SSE data", dataStr, e);
             }
@@ -149,13 +166,14 @@ export function streamPlan(
   previousPlan: string[],
   searchEngine: string,
   uploadedContext: string,
+  researchId: string | null,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ) {
   return _streamSSE(
-    'http://localhost:8000/api/research/plan',
-    { topic, requirements, feedback, previous_plan: previousPlan, search_engine: searchEngine, uploaded_context: uploadedContext },
+    `${API_BASE_URL}/api/research/plan`,
+    { topic, requirements, feedback, previous_plan: previousPlan, search_engine: searchEngine, uploaded_context: uploadedContext, research_id: researchId },
     onEvent, onComplete, onError
   );
 }
@@ -170,13 +188,14 @@ export function streamExecute(
   triageContext: string,
   searchEngine: string,
   uploadedContext: string,
+  researchId: string | null,
   onEvent: (event: StreamEvent) => void,
   onComplete: () => void,
   onError: (error: Error) => void
 ) {
   return _streamSSE(
-    'http://localhost:8000/api/research/execute',
-    { topic, sub_tasks: subTasks, requirements, triage_context: triageContext, search_engine: searchEngine, uploaded_context: uploadedContext },
+    `${API_BASE_URL}/api/research/execute`,
+    { topic, sub_tasks: subTasks, requirements, triage_context: triageContext, search_engine: searchEngine, uploaded_context: uploadedContext, research_id: researchId },
     onEvent, onComplete, onError
   );
 }
@@ -192,7 +211,7 @@ export function streamResearch(
   onError: (error: Error) => void
 ) {
   return _streamSSE(
-    'http://localhost:8000/api/research/stream',
+    `${API_BASE_URL}/api/research/stream`,
     { topic, requirements },
     onEvent, onComplete, onError
   );

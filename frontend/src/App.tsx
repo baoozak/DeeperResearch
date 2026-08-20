@@ -4,7 +4,7 @@ import { ResearchForm } from './components/ResearchForm';
 import { GraphVisualizer } from './components/GraphVisualizer';
 import { ResultDisplay } from './components/ResultDisplay';
 import { PlanReview } from './components/PlanReview';
-import { streamPlan, streamExecute, type StreamEvent } from './api/research';
+import { API_BASE_URL, streamPlan, streamExecute, type SourceRecord, type StreamEvent } from './api/research';
 import { SettingsModal } from './components/SettingsModal';
 
 function App() {
@@ -37,7 +37,7 @@ function App() {
       if (needsConfig) {
         // 本地没填，去后端查询是否已配有全局 Key (.env)
         try {
-          const res = await fetch('http://localhost:8000/health');
+          const res = await fetch(`${API_BASE_URL}/health`);
           if (res.ok) {
             const data = await res.json();
             if (data.has_global_key === false) {
@@ -69,8 +69,9 @@ function App() {
 
   // Result State
   const [draft, setDraft] = useState('');
-  const [sources, setSources] = useState<Array<{title: string, url: string, snippet: string}>>([]);
-  const [liveSources, setLiveSources] = useState<Array<{title: string, url: string, snippet: string}>>([]);
+  const [sources, setSources] = useState<SourceRecord[]>([]);
+  const [liveSources, setLiveSources] = useState<SourceRecord[]>([]);
+  const [researchId, setResearchId] = useState<string | null>(null);
 
   const abortStreamRef = useRef<(() => void) | null>(null);
 
@@ -89,6 +90,7 @@ function App() {
     setDraft('');
     setSources([]);
     setLiveSources([]);
+    setResearchId(null);
     setPlanReady(false);
     setPlanReasoning('');
     setTriageContext('');
@@ -104,15 +106,17 @@ function App() {
       [], // 首次无 previous_plan
       newSearchEngine,
       newUploadedContext,
+      null,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
+            if (event.data.research_id) setResearchId(event.data.research_id);
             setPhase(event.data.phase);
             if (event.data.message) {
               setEvents(prev => [...prev, {
                 timestamp: new Date().toISOString(),
                 phase: event.data.phase,
-                message: event.data.message
+                message: event.data.message || ''
               }]);
             }
             break;
@@ -129,6 +133,7 @@ function App() {
             setSubTasks(event.data.sub_tasks);
             break;
           case 'plan_ready':
+            setResearchId(event.data.research_id);
             setSubTasks(event.data.sub_tasks);
             setTriageContext(event.data.triage_context || '');
             setPlanReasoning(event.data.reasoning || '');
@@ -172,15 +177,17 @@ function App() {
       triageContext,
       searchEngine,
       uploadedContext,
+      researchId,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
+            if (event.data.research_id) setResearchId(event.data.research_id);
             setPhase(event.data.phase);
             if (event.data.message) {
               setEvents(prev => [...prev, {
                 timestamp: new Date().toISOString(),
                 phase: event.data.phase,
-                message: event.data.message
+                message: event.data.message || ''
               }]);
             }
             break;
@@ -245,15 +252,17 @@ function App() {
       previousPlan,
       searchEngine,
       uploadedContext,
+      researchId,
       (event: StreamEvent) => {
         switch (event.type) {
           case 'phase':
+            if (event.data.research_id) setResearchId(event.data.research_id);
             setPhase(event.data.phase);
             if (event.data.message) {
               setEvents(prev => [...prev, {
                 timestamp: new Date().toISOString(),
                 phase: event.data.phase,
-                message: event.data.message
+                message: event.data.message || ''
               }]);
             }
             break;
@@ -264,6 +273,7 @@ function App() {
             setSubTasks(event.data.sub_tasks);
             break;
           case 'plan_ready':
+            setResearchId(event.data.research_id);
             setSubTasks(event.data.sub_tasks);
             setPlanReasoning(event.data.reasoning || '');
             setPlanReady(true);

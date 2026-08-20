@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import { FileText, Download, ChevronDown, ChevronUp, Globe, RefreshCw, Check, X, FolderSync } from 'lucide-react';
 import mermaid from 'mermaid';
 import React, { useEffect, useRef, useState } from 'react';
+import { API_BASE_URL, type SourceRecord } from '../api/research';
 
 // ── Mermaid 暗色主题初始化 ──────────────────────────────
 // 使用 base 主题 + 全面覆盖 themeVariables，彻底接管所有节点的颜色
@@ -244,9 +245,9 @@ const Mermaid = ({ chart }: { chart: string }) => {
 interface ResultDisplayProps {
   draft: string;
   topic: string;
-  sources: Array<{title: string, url: string, snippet: string}>;
+  sources: SourceRecord[];
   events?: Array<{timestamp: string, phase: string, message: string}>;
-  liveSources?: Array<{title: string, url: string, snippet: string}>;
+  liveSources?: SourceRecord[];
   phase?: string;
 }
 
@@ -263,7 +264,7 @@ function cleanMarkdown(raw: string): string {
     .replace(/<a>\s*<\/a>/gi, '');
 }
 
-export function ResultDisplay({ draft, topic, events, liveSources, phase }: ResultDisplayProps) {
+export function ResultDisplay({ draft, topic, sources, events, liveSources, phase }: ResultDisplayProps) {
   const [showThinking, setShowThinking] = useState(true);
   const [obsidianVaultPath, setObsidianVaultPath] = useState<string>('');
   const [toast, setToast] = useState<{ type: 'loading' | 'success' | 'error'; message: string } | null>(null);
@@ -348,7 +349,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
     setToast({ type: 'loading', message: '正在通过 MCP 写入本地目录...' });
 
     try {
-      const response = await fetch('http://localhost:8000/api/research/archive', {
+      const response = await fetch(`${API_BASE_URL}/api/research/archive`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -365,7 +366,7 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
         throw new Error(errorData.detail || `HTTP 错误 ${response.status}`);
       }
 
-      const data = await response.json();
+      await response.json();
       setToast({ type: 'success', message: '已成功归档到本地 DeeperResearch 目录！' });
 
       setTimeout(() => {
@@ -632,6 +633,31 @@ export function ResultDisplay({ draft, topic, events, liveSources, phase }: Resu
           >
             {cleanedDraft}
           </ReactMarkdown>
+        )}
+
+        {sources.length > 0 && (
+          <details style={{ maxWidth: '800px', margin: '2rem auto 0', borderTop: '1px solid var(--panel-border)', paddingTop: '1rem' }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--secondary)', fontWeight: 600 }}>
+              来源证据 ({sources.length})
+            </summary>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem', marginTop: '1rem' }}>
+              {sources.map((source, index) => (
+                <div key={`${source.url}-${index}`} style={{ padding: '0.8rem 0', borderBottom: '1px dashed var(--panel-border)' }}>
+                  <a href={source.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--text-main)' }}>
+                    {source.title || source.url}
+                  </a>
+                  <span style={{ marginLeft: '0.6rem', fontSize: '0.75rem', color: source.verified ? 'var(--secondary)' : 'var(--text-muted)' }}>
+                    {source.verified ? '搜索结果' : '模型补充引用，需核验'}
+                  </span>
+                  {(source.evidence || source.snippet) && (
+                    <p style={{ margin: '0.35rem 0 0', color: 'var(--text-muted)', fontSize: '0.85rem', lineHeight: 1.5 }}>
+                      {source.evidence || source.snippet}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
         )}
       </div>
 

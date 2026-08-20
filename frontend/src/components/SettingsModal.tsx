@@ -42,9 +42,13 @@ const PROVIDER_PRESETS: Record<string, { name: string; baseUrl: string; defaultM
   }
 };
 
+type ProviderKey = keyof typeof PROVIDER_PRESETS;
+type ProviderConfig = { apiKey: string; baseUrl: string; model: string };
+const isProviderKey = (value: string): value is ProviderKey => value in PROVIDER_PRESETS;
+
 
 export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModalProps) {
-  const [provider, setProvider] = useState('deepseek');
+  const [provider, setProvider] = useState<ProviderKey>('deepseek');
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
@@ -52,14 +56,14 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
   const [obsidianVaultPath, setObsidianVaultPath] = useState('');
   
   // 各供应商的历史配置字典，支持独立记忆 Key/URL/Model
-  const [providerConfigs, setProviderConfigs] = useState<Record<string, { apiKey: string; baseUrl: string; model: string }>>({
+  const [providerConfigs, setProviderConfigs] = useState<Record<ProviderKey, ProviderConfig>>({
     deepseek: { apiKey: '', baseUrl: PROVIDER_PRESETS.deepseek.baseUrl, model: PROVIDER_PRESETS.deepseek.defaultModel },
     dashscope: { apiKey: '', baseUrl: PROVIDER_PRESETS.dashscope.baseUrl, model: PROVIDER_PRESETS.dashscope.defaultModel },
     custom: { apiKey: '', baseUrl: '', model: '' }
   });
 
   // 更新当前指定供应商的参数缓存
-  const updateProviderConfig = (prov: string, fields: Partial<{ apiKey: string; baseUrl: string; model: string }>) => {
+  const updateProviderConfig = (prov: ProviderKey, fields: Partial<ProviderConfig>) => {
     setProviderConfigs(prev => ({
       ...prev,
       [prov]: { ...prev[prov], ...fields }
@@ -82,7 +86,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
     const saved = localStorage.getItem('deeper_research_settings');
     const savedConfigs = localStorage.getItem('deeper_research_provider_configs');
     
-    let initialConfigs = {
+    let initialConfigs: Record<ProviderKey, ProviderConfig> = {
       deepseek: { apiKey: '', baseUrl: PROVIDER_PRESETS.deepseek.baseUrl, model: PROVIDER_PRESETS.deepseek.defaultModel },
       dashscope: { apiKey: '', baseUrl: PROVIDER_PRESETS.dashscope.baseUrl, model: PROVIDER_PRESETS.dashscope.defaultModel },
       custom: { apiKey: '', baseUrl: '', model: '' }
@@ -100,7 +104,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
     if (saved) {
       try {
         const parsed: UserSettings = JSON.parse(saved);
-        const currentProvider = parsed.llm_provider || 'deepseek';
+        const currentProvider = isProviderKey(parsed.llm_provider) ? parsed.llm_provider : 'deepseek';
         setProvider(currentProvider);
         
         const activeKey = parsed.llm_api_key || '';
@@ -135,7 +139,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
     }
   }, [isOpen]);
 
-  const applyPreset = (key: string) => {
+  const applyPreset = (key: ProviderKey) => {
     setProvider(key);
     const preset = PROVIDER_PRESETS[key];
     if (preset) {
@@ -148,6 +152,7 @@ export function SettingsModal({ isOpen, onClose, isForce = false }: SettingsModa
 
   const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const nextProvider = e.target.value;
+    if (!isProviderKey(nextProvider)) return;
     setProvider(nextProvider);
     
     // 取回该提供商上次编辑并保存的历史配置，拒绝一刀切清空

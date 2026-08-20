@@ -23,3 +23,9 @@ Thumbs.db
 
 # Node
 node_modules/
+
+# codegraph
+.codegraph/
+
+# local research job database
+backend/data/
