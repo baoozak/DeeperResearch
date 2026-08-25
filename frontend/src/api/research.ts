@@ -17,6 +17,45 @@ export interface ResearchResponse {
   draft: string;
   sources: SourceRecord[];
   phase_events: Array<{timestamp: string, phase: string, message: string}>;
+  research_id?: string;
+  version?: number;
+}
+
+export interface ResearchVersionSummary {
+  id: number;
+  research_id: string;
+  version: number;
+  kind: 'plan' | 'replan' | 'report' | 'resynthesis' | string;
+  topic: string;
+  plan: string[];
+  sources: SourceRecord[];
+  parent_version: number | null;
+  created_at: string;
+  report_preview?: string;
+}
+
+export interface ResearchVersion extends ResearchVersionSummary {
+  report: string;
+  research_results: Array<{ sub_task: string; content: string; source_count?: number }>;
+  parameters: Record<string, unknown>;
+}
+
+export interface ResearchHistoryItem {
+  id: string;
+  topic: string;
+  status: string;
+  phase: string;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  latest_version: {
+    version: number;
+    kind: string;
+    plan_count: number;
+    source_count: number;
+    has_report: boolean;
+    created_at: string;
+  } | null;
 }
 
 export type StreamEvent =
@@ -24,9 +63,9 @@ export type StreamEvent =
   | { type: 'event'; data: { timestamp: string; phase: string; message: string } }
   | { type: 'sub_tasks'; data: { sub_tasks: string[] } }
   | { type: 'search_result'; data: { sub_task: string; source_count: number } }
-  | { type: 'result'; data: { topic: string; draft: string; sources: SourceRecord[] } }
+  | { type: 'result'; data: { topic: string; draft: string; sources: SourceRecord[]; version?: number; sub_tasks?: string[] } }
   | { type: 'error'; data: { message: string } }
-  | { type: 'plan_ready'; data: { research_id: string; sub_tasks: string[]; triage_context?: string; reasoning?: string } }
+  | { type: 'plan_ready'; data: { research_id: string; version?: number; sub_tasks: string[]; triage_context?: string; reasoning?: string } }
   | { type: 'new_source'; data: SourceRecord };
 
 export interface UploadResult {
@@ -128,7 +167,7 @@ function _streamSSE(
 
       buffer += decoder.decode(value, { stream: true });
 
-      let lines = buffer.split('\n');
+      const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
       for (const line of lines) {
@@ -198,6 +237,61 @@ export function streamExecute(
     { topic, sub_tasks: subTasks, requirements, triage_context: triageContext, search_engine: searchEngine, uploaded_context: uploadedContext, research_id: researchId },
     onEvent, onComplete, onError
   );
+}
+
+/** 从历史版本继续执行，复用已保存的研究计划。 */
+export function streamResume(
+  researchId: string,
+  version: number | null,
+  onEvent: (event: StreamEvent) => void,
+  onComplete: () => void,
+  onError: (error: Error) => void
+) {
+  return _streamSSE(
+    `${API_BASE_URL}/api/research/${encodeURIComponent(researchId)}/resume`,
+    { version },
+    onEvent,
+    onComplete,
+    onError
+  );
+}
+
+/** 基于保存的检索资料重新综合，不重复联网搜索。 */
+export function streamResynthesize(
+  researchId: string,
+  version: number | null,
+  requirements: string | null,
+  onEvent: (event: StreamEvent) => void,
+  onComplete: () => void,
+  onError: (error: Error) => void
+) {
+  return _streamSSE(
+    `${API_BASE_URL}/api/research/${encodeURIComponent(researchId)}/resynthesize`,
+    { version, requirements },
+    onEvent,
+    onComplete,
+    onError
+  );
+}
+
+export async function fetchResearchHistory(limit = 50): Promise<ResearchHistoryItem[]> {
+  const response = await fetch(`${API_BASE_URL}/api/research/history?limit=${limit}`);
+  if (!response.ok) throw new Error(`读取研究历史失败: ${response.status}`);
+  const data = await response.json() as { items: ResearchHistoryItem[] };
+  return data.items;
+}
+
+export async function fetchResearchVersions(researchId: string): Promise<ResearchVersionSummary[]> {
+  const response = await fetch(`${API_BASE_URL}/api/research/${encodeURIComponent(researchId)}/versions`);
+  if (!response.ok) throw new Error(`读取研究版本失败: ${response.status}`);
+  const data = await response.json() as { items: ResearchVersionSummary[] };
+  return data.items;
+}
+
+export async function fetchResearchVersion(researchId: string, version: number): Promise<ResearchVersion> {
+  const response = await fetch(`${API_BASE_URL}/api/research/${encodeURIComponent(researchId)}/versions/${version}`);
+  if (!response.ok) throw new Error(`读取研究版本详情失败: ${response.status}`);
+  return await response.json() as ResearchVersion;
 }
 
 /**

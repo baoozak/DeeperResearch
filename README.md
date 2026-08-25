@@ -12,10 +12,11 @@ DeeperResearch是一个基于多智能体协作（Multi-Agent）深度研究系�
   - **自纠错研究员 (Search Workers)**：并行派发执行搜索子任务，且每个 Worker **均内置有状态的“认知墓碑”反思避障循环**。如果单次搜索总结被审查判定为不合格或数据空虚，系统会记录当前失败轨迹（检索词、原因、内容草稿）为“墓碑”，并在下一轮尝试的提炼和审查 Prompt 中进行定向规避，防止在雷同的空话废话中“鬼打墙”打转，强力确保重试探索的差异化深度。
   - **综合撰稿人 (Synthesizer)**：最终融合所有的知识库，遵循规范生成图文并茂的专业级研报。
 - **👤 Human-in-the-Loop 审批环**：规划师拆解完子任务后，系统会先将调研方案呈现给用户审批。用户可确认开始执行，也可填写反馈意见触发规划师重新拆解，循环往复直到满意才正式开始调研。
+- **🗂️ 研究历史与版本管理**：每次研究都会持久化主题、调研计划、检索资料、来源、报告和运行参数。历史面板支持从指定版本继续执行、基于已保存资料重新综合，以及选择两个报告版本并排对比。
 - **💫 动态交互感知 (UI)**：带有动态节点状态机展示，通过 HTTP Server-Sent Events (SSE) 长连接，实现整个 LangGraph 思维链路和状态转移的可视化实时呈现。
 - **🎯 用户自定义要求**：支持在输入研究主题时额外填写详细要求（如“重点分析技术架构”“用学术论文风格”等），要求会同时注入规划师和撰稿人，影响子任务拆解方向和报告写作风格。
 - **📄 多格式文件上传**：集成 [MarkItDown](https://github.com/microsoft/markitdown)，支持上传 PDF / Word / Excel / PPT / Markdown 等多种格式文件作为参考材料，自动转换为 Markdown 注入研究流程，辅助规划师拆解子任务和撰稿人生成报告。
-- **💾 轻量级持久化**：报告生成完成后自动缓存至浏览器 localStorage，防止误触刷新丢失。同时支持一键导出为 Markdown 文件。
+- **💾 轻量级持久化**：后端使用 SQLite 保存研究任务、可重放 SSE 事件和不可变版本快照；前端同时缓存最近一次报告到浏览器 localStorage，防止误触刷新丢失。支持一键导出为 Markdown 文件。
 - **📂 本地知识库一键同步归档 (基于 Filesystem MCP)**：支持一键将生成的 Markdown 报告同步到本地任意指定的文件夹目录（如 Obsidian 库、Typora 或 VS Code 本地工作区等）。
 
 ## 📸 界面展示
@@ -45,7 +46,9 @@ DeeperResearch/
 │   │   ├── prompts.py        # Master 级系统提示词库 (含重规划模板)
 │   │   ├── state.py          # 跨节点全局记忆与状态维持机制
 │   │   └── tools.py          # AnySearch 统一搜索入口 (国内/国际免代理直连)
-│   ├── main.py               # SSE 服务端 (/plan + /execute + /archive + /upload 多端点)
+│   ├── main.py               # FastAPI/SSE 服务端与历史版本 API
+│   ├── jobs.py               # SQLite 任务、事件与研究版本持久化
+│   ├── data/                 # 本地 SQLite 数据目录 (默认被 Git 忽略)
 │   └── config.py             # 全局环境依赖配置项
 ├── frontend/                 # 🔭 可视化交互前端
 │   ├── src/
@@ -54,6 +57,7 @@ DeeperResearch/
 │   │   │   ├── PlanReview.tsx      # 调研方案审批面板 (Human-in-the-Loop)
 │   │   │   ├── GraphVisualizer.tsx # 动态状态机可视化
 │   │   │   ├── ResultDisplay.tsx   # Markdown 报告渲染 + Mermaid 图表
+│   │   │   ├── ResearchHistory.tsx  # 研究历史、继续执行、重新综合与版本对比
 │   │   │   ├── ResearchForm.tsx    # 研究目标输入表单
 │   │   │   └── SettingsModal.tsx   # 大模型与检索参数配置面板
 │   │   ├── App.tsx           # 两段式审批流主调度器
@@ -88,6 +92,14 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 后端将在 `http://0.0.0.0:8000` 启动。
 
+默认数据库文件为 `backend/data/research.sqlite3`。如需更换位置，可设置环境变量：
+
+```bash
+RESEARCH_DB_PATH=/path/to/research.sqlite3
+```
+
+服务启动时会自动创建数据表，并将旧版任务结果迁移为第一个历史版本。数据库和 `.codegraph/` 等本地运行文件不会提交到 Git。
+
 ### 2. 前端依赖与启动
 
 打开一个新的终端会话，进入 `frontend` 目录：
@@ -97,6 +109,28 @@ npm install
 npm run dev
 ```
 按照控制台提示打开浏览器访问即可。
+
+### 3. 研究历史与版本操作
+
+完成一次研究后，点击页面右上角的“研究历史”即可打开历史面板：
+
+- 展开研究记录可查看每个版本的计划数量、来源数量和生成时间。
+- 点击播放按钮可从指定版本继续执行，并生成新的报告版本。
+- 点击刷新按钮可复用该版本保存的检索资料重新综合，不重复联网搜索。
+- 选择两个已生成报告的版本后，点击对比按钮即可并排阅读两版报告。
+
+### 4. 研究历史 API
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/research/history` | 获取研究历史摘要 |
+| `GET` | `/api/research/{research_id}/versions` | 获取某次研究的版本列表 |
+| `GET` | `/api/research/{research_id}/versions/{version}` | 获取版本完整内容、来源和参数 |
+| `POST` | `/api/research/{research_id}/resume` | 从历史版本继续执行，body 可传 `{"version": 2}` |
+| `POST` | `/api/research/{research_id}/resynthesize` | 基于历史资料重新综合，body 可传 `{"version": 2, "requirements": "..."}` |
+| `POST` | `/api/research/{research_id}/cancel` | 取消排队中或执行中的研究任务 |
+
+`/plan`、`/execute` 和旧版同步研究接口会自动写入版本快照；规划、执行和重跑过程仍通过 SSE 推送实时事件。
 
 ## 📄 开源协议 (License)
 

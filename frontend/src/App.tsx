@@ -1,11 +1,21 @@
 import { useState, useRef, useEffect } from 'react';
-import { Brain, AlertCircle, Settings } from 'lucide-react';
+import { Brain, AlertCircle, History, Settings } from 'lucide-react';
 import { ResearchForm } from './components/ResearchForm';
 import { GraphVisualizer } from './components/GraphVisualizer';
 import { ResultDisplay } from './components/ResultDisplay';
 import { PlanReview } from './components/PlanReview';
-import { API_BASE_URL, streamPlan, streamExecute, type SourceRecord, type StreamEvent } from './api/research';
+import {
+  API_BASE_URL,
+  fetchResearchVersion,
+  streamPlan,
+  streamExecute,
+  streamResume,
+  streamResynthesize,
+  type SourceRecord,
+  type StreamEvent,
+} from './api/research';
 import { SettingsModal } from './components/SettingsModal';
+import { ResearchHistory } from './components/ResearchHistory';
 
 function App() {
   const [topic, setTopic] = useState('');
@@ -72,6 +82,7 @@ function App() {
   const [sources, setSources] = useState<SourceRecord[]>([]);
   const [liveSources, setLiveSources] = useState<SourceRecord[]>([]);
   const [researchId, setResearchId] = useState<string | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   const abortStreamRef = useRef<(() => void) | null>(null);
 
@@ -297,6 +308,95 @@ function App() {
     abortStreamRef.current = abortStream;
   };
 
+  const loadHistoricalVersion = async (historicalResearchId: string, version: number) => {
+    const versionRecord = await fetchResearchVersion(historicalResearchId, version);
+    const savedParameters = versionRecord.parameters;
+    setResearchId(historicalResearchId);
+    setTopic(versionRecord.topic);
+    setRequirements(typeof savedParameters.requirements === 'string' ? savedParameters.requirements : '');
+    setSearchEngine(savedParameters.search_engine === 'international' ? 'international' : 'domestic');
+    setUploadedContext(typeof savedParameters.uploaded_context === 'string' ? savedParameters.uploaded_context : '');
+    setSubTasks(versionRecord.plan);
+    setSources(versionRecord.sources);
+    setDraft(versionRecord.report || '');
+    setPlanReady(false);
+    setPlanReasoning('');
+    setTriageContext(typeof savedParameters.triage_context === 'string' ? savedParameters.triage_context : '');
+    setEvents([]);
+    setLiveSources([]);
+    return versionRecord;
+  };
+
+  const handleResumeHistorical = async (historicalResearchId: string, version: number) => {
+    try {
+      await loadHistoricalVersion(historicalResearchId, version);
+      setIsHistoryOpen(false);
+      setError('');
+      setIsResearching(true);
+      setPhase('searching');
+      if (abortStreamRef.current) abortStreamRef.current();
+      abortStreamRef.current = streamResume(
+        historicalResearchId,
+        version,
+        (event) => {
+          if (event.type === 'phase') {
+            setPhase(event.data.phase);
+            if (event.data.message) setEvents((prev) => [...prev, { timestamp: new Date().toISOString(), phase: event.data.phase, message: event.data.message || '' }]);
+          } else if (event.type === 'event') {
+            setEvents((prev) => [...prev, event.data]);
+          } else if (event.type === 'new_source') {
+            setLiveSources((prev) => prev.some((source) => source.url === event.data.url) ? prev : [...prev, event.data]);
+          } else if (event.type === 'result') {
+            setTopic(event.data.topic);
+            setDraft(event.data.draft);
+            setSources(event.data.sources || []);
+          } else if (event.type === 'error') {
+            setError(event.data.message);
+            setIsResearching(false);
+          }
+        },
+        () => { setIsResearching(false); setPhase('done'); },
+        (reason) => { setError(`连接错误: ${reason.message}`); setIsResearching(false); },
+      );
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '读取历史版本失败');
+    }
+  };
+
+  const handleResynthesizeHistorical = async (historicalResearchId: string, version: number) => {
+    try {
+      const versionRecord = await loadHistoricalVersion(historicalResearchId, version);
+      setIsHistoryOpen(false);
+      setError('');
+      setIsResearching(true);
+      setPhase('synthesizing');
+      if (abortStreamRef.current) abortStreamRef.current();
+      abortStreamRef.current = streamResynthesize(
+        historicalResearchId,
+        version,
+        typeof versionRecord.parameters.requirements === 'string' ? versionRecord.parameters.requirements : null,
+        (event) => {
+          if (event.type === 'phase') {
+            setPhase(event.data.phase);
+            if (event.data.message) setEvents((prev) => [...prev, { timestamp: new Date().toISOString(), phase: event.data.phase, message: event.data.message || '' }]);
+          } else if (event.type === 'event') {
+            setEvents((prev) => [...prev, event.data]);
+          } else if (event.type === 'result') {
+            setDraft(event.data.draft);
+            setSources(event.data.sources || []);
+          } else if (event.type === 'error') {
+            setError(event.data.message);
+            setIsResearching(false);
+          }
+        },
+        () => { setIsResearching(false); setPhase('done'); },
+        (reason) => { setError(`连接错误: ${reason.message}`); setIsResearching(false); },
+      );
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : '读取历史版本失败');
+    }
+  };
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -317,6 +417,7 @@ function App() {
         setSources(data.sources || []);
         setSubTasks(data.subTasks || []);
         setEvents(data.events || []);
+        setResearchId(data.researchId || null);
         if (data.draft) setPhase('done');
       } catch (e) {
         console.error("Failed to restore research:", e);
@@ -332,10 +433,11 @@ function App() {
         draft,
         sources,
         subTasks,
-        events
+        events,
+        researchId,
       }));
     }
-  }, [phase, draft, topic, sources, subTasks, events]);
+  }, [phase, draft, topic, sources, subTasks, events, researchId]);
 
   // 判断右侧面板应该显示什么
   const renderRightPanel = () => {
@@ -379,8 +481,9 @@ function App() {
           </div>
         </div>
 
-        {/* 顶部设置按钮 */}
-        <button
+        {/* 顶部操作 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+          <button
           onClick={() => {
             setIsForceSettings(false);
             setIsSettingsOpen(true);
@@ -410,7 +513,16 @@ function App() {
         >
           <Settings size={16} />
           <span>研究设置</span>
-        </button>
+          </button>
+          <button
+          onClick={() => setIsHistoryOpen(true)}
+          style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid var(--panel-border)', color: 'var(--text-main)', padding: '0.55rem 0.9rem', borderRadius: '8px', fontSize: '0.88rem', cursor: 'pointer', fontWeight: 500 }}
+          title="打开研究历史与版本管理"
+        >
+          <History size={16} />
+          <span>研究历史</span>
+          </button>
+        </div>
       </header>
 
       {/* Main Layout */}
@@ -441,6 +553,13 @@ function App() {
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)} 
         isForce={isForceSettings} 
+      />
+
+      <ResearchHistory
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        onResume={handleResumeHistorical}
+        onResynthesize={handleResynthesizeHistorical}
       />
 
     </div>

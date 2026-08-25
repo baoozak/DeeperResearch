@@ -6,6 +6,9 @@ FastAPI 应用主入口。
 - GET  /health            — 健康检查 (含 LLM 配置信息)
 - POST /api/research       — 同步执行研究并返回结果
 - POST /api/research/stream — SSE 流式推送各阶段实时状态
+- GET  /api/research/history — 研究历史与版本摘要
+- POST /api/research/{id}/resume — 从历史版本继续执行
+- POST /api/research/{id}/resynthesize — 基于历史资料重新综合
 """
 
 import json
@@ -24,7 +27,15 @@ from pydantic import BaseModel, Field
 
 from .config import get_settings
 from .agent.graph import research_graph, execute_graph
-from .agent.nodes import triage_node, orchestrator_node, _make_event, _get_llm, PlanOutput, _parse_structured_json
+from .agent.nodes import (
+    triage_node,
+    orchestrator_node,
+    synthesizer_node,
+    _make_event,
+    _get_llm,
+    PlanOutput,
+    _parse_structured_json,
+)
 from .agent.prompts import (
     ORCHESTRATOR_SYSTEM,
     ORCHESTRATOR_USER_INITIAL,
@@ -34,8 +45,12 @@ from .jobs import (
     TERMINAL_STATUSES,
     aappend_event,
     acreate_job,
+    acreate_version,
     aget_events,
     aget_job,
+    aget_version,
+    alist_jobs,
+    alist_versions,
     aupdate_job,
     job_store,
 )
@@ -162,12 +177,49 @@ class ExecuteRequest(BaseModel):
     research_id: str | None = Field(default=None, max_length=100, description="可选的可恢复研究任务 ID")
 
 
+class ResumeRequest(BaseModel):
+    """从历史版本继续执行，可选覆盖子任务或用户要求。"""
+    version: int | None = Field(default=None, ge=1, description="要继续执行的历史版本号，默认最新版本")
+    sub_tasks: list[Annotated[str, Field(min_length=3, max_length=1000)]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+        description="可选的子任务覆盖列表",
+    )
+    requirements: str | None = Field(default=None, max_length=10000, description="可选的要求覆盖文本")
+
+
+class ResynthesizeRequest(BaseModel):
+    """基于历史检索资料重新生成报告，不重复联网搜索。"""
+    version: int | None = Field(default=None, ge=1, description="作为输入的历史版本号，默认最新版本")
+    requirements: str | None = Field(default=None, max_length=10000, description="可选的重新综合要求")
+
+
 class ResearchResponse(BaseModel):
     """研究结果响应"""
     topic: str
     draft: str
     sources: list[dict]
     phase_events: list[dict]
+    research_id: str | None = None
+    version: int | None = None
+
+
+def _version_parameters(request: BaseModel, *, triage_context: str = "") -> dict:
+    """Persist request parameters while excluding transient credentials."""
+    settings = get_settings()
+    parameters = request.model_dump()
+    parameters["triage_context"] = triage_context
+    parameters["runtime"] = {
+        "max_sub_tasks": temp_max_sub_tasks.get() or settings.max_sub_tasks,
+        "max_search_results": temp_max_search_results.get() or settings.max_search_results,
+        "max_search_review_retries": (
+            temp_max_search_review_retries.get() or settings.max_search_review_retries
+        ),
+        "llm_model": temp_model.get() or settings.model_name,
+        "llm_base_url": temp_base_url.get() or settings.openai_base_url,
+    }
+    return parameters
 
 
 # ============================================================================
@@ -277,6 +329,7 @@ async def run_research(request: ResearchRequest):
     """
     logger.info(f"🚀 收到研究请求: {request.topic}")
 
+    research_id = await acreate_job(request.topic, request.model_dump())
     try:
         # 初始化状态
         initial_state = {
@@ -301,6 +354,30 @@ async def run_research(request: ResearchRequest):
 
         final_state = await research_graph.ainvoke(initial_state, config=config)
 
+        version = await acreate_version(
+            research_id,
+            kind="report",
+            topic=final_state.get("topic", request.topic),
+            plan=final_state.get("sub_tasks", []),
+            sources=final_state.get("sources", []),
+            research_results=final_state.get("research_results", []),
+            report=final_state.get("draft", ""),
+            parameters=_version_parameters(request),
+        )
+        await aupdate_job(
+            research_id,
+            status="completed",
+            phase="done",
+            result={
+                "topic": final_state.get("topic", request.topic),
+                "draft": final_state.get("draft", ""),
+                "sources": final_state.get("sources", []),
+                "research_results": final_state.get("research_results", []),
+                "sub_tasks": final_state.get("sub_tasks", []),
+                "version": version,
+            },
+        )
+
         logger.info(f"✅ 研究完成: {request.topic}")
 
         return ResearchResponse(
@@ -308,10 +385,13 @@ async def run_research(request: ResearchRequest):
             draft=final_state.get("draft", ""),
             sources=final_state.get("sources", []),
             phase_events=final_state.get("phase_events", []),
+            research_id=research_id,
+            version=version,
         )
 
     except Exception as e:
         logger.error(f"❌ 研究失败: {e}", exc_info=True)
+        await aupdate_job(research_id, status="failed", phase="research", error=str(e))
         raise HTTPException(status_code=500, detail=f"研究过程中发生错误: {str(e)}")
 
 
@@ -600,10 +680,21 @@ async def _run_plan_job(job_id: str, request: PlanRequest) -> None:
         if (await aget_job(job_id) or {}).get("status") == "cancelled":
             return
 
+        version = await acreate_version(
+            job_id,
+            kind="plan" if not is_replan else "replan",
+            topic=request.topic,
+            plan=sub_tasks,
+            sources=state.get("sources", []),
+            research_results=state.get("research_results", []),
+            report="",
+            parameters=_version_parameters(request, triage_context=state.get("triage_context", "")),
+        )
         await _emit_job_event(job_id, "event", _make_event("planning", f"规划完成: 生成 {len(sub_tasks)} 个子任务 ({reasoning})"))
         await _emit_job_event(job_id, "sub_tasks", {"sub_tasks": sub_tasks})
         await _emit_job_event(job_id, "plan_ready", {
             "research_id": job_id,
+            "version": version,
             "sub_tasks": sub_tasks,
             "triage_context": state.get("triage_context", ""),
             "reasoning": reasoning,
@@ -614,6 +705,7 @@ async def _run_plan_job(job_id: str, request: PlanRequest) -> None:
             phase="plan_review",
             result={
                 "topic": request.topic,
+                "version": version,
                 "sub_tasks": sub_tasks,
                 "reasoning": reasoning,
                 "triage_context": state.get("triage_context", ""),
@@ -632,6 +724,7 @@ async def _run_execute_job(job_id: str, request: ExecuteRequest) -> None:
         existing_job = await aget_job(job_id)
         if existing_job and existing_job["status"] == "cancelled":
             return
+        previous_result = (existing_job or {}).get("result") or {}
         initial_state = {
             "topic": request.topic,
             "user_requirements": request.requirements,
@@ -643,13 +736,15 @@ async def _run_execute_job(job_id: str, request: ExecuteRequest) -> None:
             "sources": [],
             "search_engine": request.search_engine,
             "uploaded_context": request.uploaded_context,
-            "triage_context": request.triage_context,
+            "triage_context": request.triage_context or previous_result.get("triage_context", ""),
             "error": "",
         }
-        await aupdate_job(job_id, status="running", phase="searching")
-        await _emit_job_event(job_id, "phase", {"phase": "searching", "message": "🔍 搜索智能体正在并发执行调研..."})
+        await aupdate_job(job_id, status="running", phase="searching", clear_error=True)
+        await _emit_job_event(job_id, "phase", {"phase": "searching", "message": "🔍 搜索智能体正在并发执行调研...", "research_id": job_id})
 
-        config = {"configurable": {"thread_id": job_id}}
+        # Each rerun gets a fresh LangGraph checkpoint thread; the SQLite job id
+        # remains the stable public identity across all history versions.
+        config = {"configurable": {"thread_id": f"{job_id}:{uuid.uuid4()}"}}
         last_phase = "searching"
         async for event in execute_graph.astream(initial_state, config=config, stream_mode="updates"):
             job = await aget_job(job_id)
@@ -678,10 +773,27 @@ async def _run_execute_job(job_id: str, request: ExecuteRequest) -> None:
         state_values = final_state.values
         if (await aget_job(job_id) or {}).get("status") == "cancelled":
             return
+        version = await acreate_version(
+            job_id,
+            kind="report",
+            topic=state_values.get("topic", request.topic),
+            plan=state_values.get("sub_tasks", request.sub_tasks),
+            sources=state_values.get("sources", []),
+            research_results=state_values.get("research_results", []),
+            report=state_values.get("draft", ""),
+            parameters=_version_parameters(
+                request,
+                triage_context=state_values.get("triage_context", request.triage_context),
+            ),
+        )
         result = {
             "topic": state_values.get("topic", request.topic),
             "draft": state_values.get("draft", ""),
             "sources": state_values.get("sources", []),
+            "research_results": state_values.get("research_results", []),
+            "sub_tasks": state_values.get("sub_tasks", request.sub_tasks),
+            "triage_context": state_values.get("triage_context", request.triage_context),
+            "version": version,
         }
         await aupdate_job(job_id, result=result)
         await _emit_job_event(job_id, "result", result)
@@ -690,6 +802,96 @@ async def _run_execute_job(job_id: str, request: ExecuteRequest) -> None:
         logger.error(f"❌ 执行失败: {exc}", exc_info=True)
         await aupdate_job(job_id, status="failed", phase="searching", error=str(exc))
         await _emit_job_event(job_id, "error", {"message": f"执行过程中发生错误: {exc}"})
+
+
+async def _run_resynthesize_job(
+    job_id: str,
+    source_version: dict,
+    requirements: str | None,
+) -> None:
+    """Regenerate a report from a saved version without repeating web search."""
+    try:
+        parameters = dict(source_version.get("parameters") or {})
+        user_requirements = requirements if requirements is not None else parameters.get("requirements", "")
+        state = {
+            "topic": source_version["topic"],
+            "user_requirements": user_requirements,
+            "sub_tasks": source_version.get("plan", []),
+            "research_results": source_version.get("research_results", []),
+            "draft": "",
+            "current_phase": "synthesizing",
+            "phase_events": [],
+            "sources": source_version.get("sources", []),
+            "search_engine": parameters.get("search_engine", "domestic"),
+            "uploaded_context": parameters.get("uploaded_context", ""),
+            "triage_context": parameters.get("triage_context", ""),
+            "error": "",
+        }
+        await aupdate_job(job_id, status="running", phase="synthesizing", clear_error=True)
+        await _emit_job_event(
+            job_id,
+            "phase",
+            {
+                "phase": "synthesizing",
+                "message": f"📝 正在基于版本 v{source_version['version']} 重新综合报告...",
+                "research_id": job_id,
+            },
+        )
+        update = await synthesizer_node(state)
+        draft = update.get("draft", "")
+        parameters["requirements"] = user_requirements
+        parameters["resynthesize_from_version"] = source_version["version"]
+        version = await acreate_version(
+            job_id,
+            kind="resynthesis",
+            topic=source_version["topic"],
+            plan=source_version.get("plan", []),
+            sources=source_version.get("sources", []),
+            research_results=source_version.get("research_results", []),
+            report=draft,
+            parameters=parameters,
+            parent_version=source_version["version"],
+        )
+        result = {
+            "topic": source_version["topic"],
+            "draft": draft,
+            "sources": source_version.get("sources", []),
+            "research_results": source_version.get("research_results", []),
+            "sub_tasks": source_version.get("plan", []),
+            "triage_context": parameters.get("triage_context", ""),
+            "version": version,
+        }
+        await aupdate_job(job_id, result=result)
+        for event in update.get("phase_events", []):
+            await _emit_job_event(job_id, "event", event)
+        await _emit_job_event(job_id, "result", result)
+        await _emit_job_event(job_id, "phase", {"phase": "done", "message": "重新综合完成!"})
+    except Exception as exc:
+        logger.error(f"❌ 重新综合失败: {exc}", exc_info=True)
+        await aupdate_job(job_id, status="failed", phase="synthesizing", error=str(exc))
+        await _emit_job_event(job_id, "error", {"message": f"重新综合过程中发生错误: {exc}"})
+
+
+async def _get_requested_version(research_id: str, version: int | None) -> dict | None:
+    if version is not None:
+        return await aget_version(research_id, version)
+    versions = await alist_versions(research_id, limit=1)
+    if not versions:
+        return None
+    return await aget_version(research_id, versions[0]["version"])
+
+
+def _version_stream(job_id: str) -> StreamingResponse:
+    return StreamingResponse(
+        _stream_job_events(job_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Research-Id": job_id,
+        },
+    )
 
 
 # ============================================================================
@@ -706,6 +908,7 @@ async def plan_research(request: PlanRequest):
 
     should_start = not existing_job or existing_job["status"] not in {"queued", "running"}
     if should_start:
+        await aupdate_job(job_id, status="running", phase="initializing", clear_error=True)
         _spawn_background_job(_run_plan_job(job_id, request))
     return StreamingResponse(
         _stream_job_events(job_id),
@@ -733,6 +936,7 @@ async def execute_research(request: ExecuteRequest):
 
     should_start = not existing_job or existing_job["status"] not in {"queued", "running", "completed"}
     if should_start:
+        await aupdate_job(job_id, status="running", phase="searching", clear_error=True)
         _spawn_background_job(_run_execute_job(job_id, request))
     return StreamingResponse(
         _stream_job_events(job_id),
@@ -889,6 +1093,16 @@ async def archive_to_obsidian(request: ArchiveRequest):
 # 研究任务查询、事件重放与取消
 # ============================================================================
 
+@app.get("/api/research/history")
+async def list_research_history(limit: int = 50, offset: int = 0):
+    """Return lightweight history cards; full reports are fetched by version."""
+    return {
+        "items": await alist_jobs(limit=max(1, min(limit, 200)), offset=max(0, offset)),
+        "limit": max(1, min(limit, 200)),
+        "offset": max(0, offset),
+    }
+
+
 @app.get("/api/research/{research_id}")
 async def get_research_job(research_id: str):
     job = await aget_job(research_id)
@@ -897,6 +1111,79 @@ async def get_research_job(research_id: str):
     # Do not expose uploaded documents and user requirements from the persisted payload.
     job.pop("payload", None)
     return job
+
+
+@app.get("/api/research/{research_id}/versions")
+async def list_research_versions(research_id: str, limit: int = 50):
+    job = await aget_job(research_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    return {"research_id": research_id, "items": await alist_versions(research_id, limit=max(1, min(limit, 200)))}
+
+
+@app.get("/api/research/{research_id}/versions/{version}")
+async def get_research_version(research_id: str, version: int):
+    version_record = await aget_version(research_id, version)
+    if version_record is None:
+        raise HTTPException(status_code=404, detail="研究版本不存在")
+    return version_record
+
+
+@app.post("/api/research/{research_id}/resume")
+async def resume_research(research_id: str, request: ResumeRequest):
+    job = await aget_job(research_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    version_record = await _get_requested_version(research_id, request.version)
+    if version_record is None:
+        raise HTTPException(status_code=400, detail="没有可继续执行的研究版本")
+
+    parameters = version_record.get("parameters") or {}
+    sub_tasks = request.sub_tasks or version_record.get("plan", [])
+    if not sub_tasks:
+        raise HTTPException(status_code=400, detail="该版本没有可执行的研究计划")
+    search_engine = parameters.get("search_engine", "domestic")
+    if search_engine not in {"domestic", "international"}:
+        search_engine = "domestic"
+    execute_request = ExecuteRequest(
+        topic=version_record["topic"],
+        sub_tasks=sub_tasks,
+        requirements=request.requirements if request.requirements is not None else parameters.get("requirements", ""),
+        triage_context=parameters.get("triage_context", ""),
+        search_engine=search_engine,
+        uploaded_context=parameters.get("uploaded_context", ""),
+        research_id=research_id,
+    )
+    if job["status"] not in {"queued", "running"}:
+        await aupdate_job(research_id, status="running", phase="searching", clear_error=True)
+        await _emit_job_event(
+            research_id,
+            "event",
+            _make_event("searching", f"从历史版本 v{version_record['version']} 继续执行研究..."),
+        )
+        _spawn_background_job(_run_execute_job(research_id, execute_request))
+    return _version_stream(research_id)
+
+
+@app.post("/api/research/{research_id}/resynthesize")
+async def resynthesize_research(research_id: str, request: ResynthesizeRequest):
+    job = await aget_job(research_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    version_record = await _get_requested_version(research_id, request.version)
+    if version_record is None:
+        raise HTTPException(status_code=400, detail="没有可重新综合的研究版本")
+    if not version_record.get("research_results"):
+        raise HTTPException(status_code=400, detail="该版本没有保存检索资料，无法重新综合")
+    if job["status"] not in {"queued", "running"}:
+        await aupdate_job(research_id, status="running", phase="synthesizing", clear_error=True)
+        await _emit_job_event(
+            research_id,
+            "event",
+            _make_event("synthesizing", f"从历史版本 v{version_record['version']} 重新综合报告..."),
+        )
+        _spawn_background_job(_run_resynthesize_job(research_id, version_record, request.requirements))
+    return _version_stream(research_id)
 
 
 @app.get("/api/research/{research_id}/events")
